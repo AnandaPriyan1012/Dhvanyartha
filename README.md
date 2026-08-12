@@ -70,58 +70,80 @@ flowchart LR
 
 ## Setup
 
-### Prerequisites
+You need Python 3.10+ and Google Chrome. That's it — no Google Cloud account, no
+`gcloud`, and no administrator rights.
 
-- Python 3.10+
-- A Google Cloud project with the **Vertex AI API** enabled
-- Google Chrome
+### 1. Get a Gemini API key
 
-### 1. Backend
+Go to **https://aistudio.google.com/apikey** and create a key (free).
+
+Copy `backend/.env.example` to `backend/.env` and paste the key in:
+
+```
+GEMINI_API_KEY=your-key-here
+```
+
+> Prefer Vertex AI? Set `GCP_PROJECT_ID` instead and run
+> `gcloud auth application-default login`. The backend takes whichever it finds,
+> checking the API key first.
+
+### 2. Start it
+
+From the project folder, double-click **`start.bat`** — or run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File start.ps1
+```
+
+That creates the virtual environment if needed, installs dependencies, starts the
+backend on port 8000 and the dashboard on port 5500, waits until the backend
+answers, and tells you whether Gemini is actually configured before opening the
+dashboard.
+
+To check the backend by hand at any time:
 
 ```bash
+curl http://localhost:8000/health
+```
+
+<details>
+<summary>Starting the two servers manually instead</summary>
+
+```bash
+# terminal 1 — must be run from inside backend/, because the imports are flat
+# and the SQLite path is relative to the working directory
 cd backend
-python -m venv venv
-venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
-pip install -r requirements.txt
-```
+../venv/Scripts/python -m uvicorn main:app --reload
 
-Authenticate to Google Cloud and point the app at your project:
-
-```bash
-gcloud auth application-default login
-```
-
-Create `backend/.env`:
-
-```
-GCP_PROJECT_ID=your-gcp-project-id
-```
-
-Then start the server **from inside `backend/`** — the module imports are flat and the SQLite path is relative, so the working directory matters:
-
-```bash
-uvicorn main:app --reload
-```
-
-The API comes up on `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
-
-### 2. Dashboard
-
-Serve `frontend/` **on port 5500 specifically**:
-
-```bash
+# terminal 2
 cd frontend
 python -m http.server 5500
 ```
+</details>
 
-> **Port 5500 is not arbitrary.** The extension only syncs the signed-in Google account into its own storage when it detects the dashboard at `localhost:5500` (see `extension/content.js`). On any other port, extension scans will not appear under the right parent in the dashboard.
+> **Port 5500 is not arbitrary.** The extension only links itself to the signed-in
+> Google account when it sees the dashboard on that exact port (see
+> `extension/content.js`). On any other port, extension scans will not show up
+> under the right parent.
 
-### 3. Extension
+### 3. Install the extension in Chrome
 
 1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. **Load unpacked** → select the `extension/` folder
-4. Open the dashboard and sign in with Google — this links the extension to the parent account
+2. Turn on **Developer mode** (top right)
+3. Click **Load unpacked** and select the `extension/` folder
+4. On the dashboard at `http://localhost:5500`, **sign in with Google** — this is
+   what links the extension to your parent account
+
+The extension is loaded unpacked rather than installed from the Chrome Web Store
+because it talks to a backend on your own machine. It is built to protect one
+household running its own server, not to be installed by strangers.
+
+### Checking it works
+
+Open any web page. Within a few seconds a small toast should appear at the bottom
+of the screen reporting the scan. If nothing happens, open the extension's service
+worker console from `chrome://extensions` — every step logs there with a
+`[Dhvanyartha Guard]` prefix.
 
 ---
 
@@ -143,6 +165,7 @@ python -m unittest discover tests -v
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/health` | Is the server up, and are Gemini credentials configured? |
 | `POST` | `/analyze` | Moderate a block of text |
 | `POST` | `/analyze-image` | Moderate an image (used by the extension for page screenshots) |
 | `POST` | `/analyze-audio` | Transcribe and moderate audio |

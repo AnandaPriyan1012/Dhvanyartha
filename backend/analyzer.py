@@ -18,6 +18,10 @@ load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
+class MissingCredentialsError(RuntimeError):
+    """Raised when neither a Gemini API key nor a GCP project is configured."""
+
+
 _client = None
 
 
@@ -32,11 +36,30 @@ def get_client():
     """
     global _client
     if _client is None:
-        _client = genai.Client(
-            vertexai=True,
-            project=PROJECT_ID,
-            location="us-central1"
-        )
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        project_id = os.getenv("GCP_PROJECT_ID")
+
+        if api_key:
+            # Gemini Developer API: one key from aistudio.google.com, with no
+            # gcloud install, no GCP project, and no administrator rights needed.
+            # Checked first because it is by far the easier path to get running.
+            _client = genai.Client(api_key=api_key)
+        elif project_id:
+            # Vertex AI: needs `gcloud auth application-default login` to have been
+            # run, and the Vertex AI API enabled on the project.
+            _client = genai.Client(
+                vertexai=True,
+                project=project_id,
+                location="us-central1"
+            )
+        else:
+            raise MissingCredentialsError(
+                "No Gemini credentials configured. Create backend/.env with:\n"
+                "    GEMINI_API_KEY=your-key-here\n"
+                "and get a free key at https://aistudio.google.com/apikey\n"
+                "Alternatively, to use Vertex AI instead, set GCP_PROJECT_ID and "
+                "run `gcloud auth application-default login`."
+            )
     return _client
 
 

@@ -13,6 +13,8 @@ from analyzer import (
     route_text_message,
     get_settings,
     save_settings,
+    get_client,
+    MissingCredentialsError,
     UnsafeURLError,
 )
 from analytics import chart_decisions, chart_content_types, chart_timeline, summary_stats
@@ -25,6 +27,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(MissingCredentialsError)
+async def missing_credentials_handler(request: Request, exc: MissingCredentialsError):
+    """Setup isn't finished — say exactly what to do rather than returning a 500."""
+    return JSONResponse(status_code=503, content={"type": "error", "message": str(exc)})
 
 
 @app.exception_handler(UnsafeURLError)
@@ -52,6 +60,20 @@ class SettingsInput(BaseModel):
     child_age: int
     blocked_categories: list[str]
     guard_enabled: bool = True
+
+
+@app.get("/health")
+def health():
+    """Is the server up, and is it actually able to reach Gemini?
+
+    Worth having because every other endpoint only fails at the moment it tries to
+    analyze something, which makes a setup problem look like a broken feature.
+    """
+    try:
+        get_client()
+        return {"status": "ok", "gemini_configured": True, "detail": "ready to scan"}
+    except MissingCredentialsError as exc:
+        return {"status": "ok", "gemini_configured": False, "detail": str(exc)}
 
 
 @app.post("/analyze")
