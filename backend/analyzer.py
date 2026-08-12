@@ -18,6 +18,14 @@ load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
+# Which Gemini model to use for every scan. This was hardcoded to gemini-2.5-flash
+# in five places, and Google has since stopped serving that model to new API keys —
+# every scan failed with a 404 that read like a broken feature rather than a
+# retired model. "gemini-flash-latest" tracks the current fast model so this cannot
+# go stale the same way; set GEMINI_MODEL in .env to pin a specific version if you
+# would rather have byte-stable behaviour than automatic upgrades.
+MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+
 class MissingCredentialsError(RuntimeError):
     """Raised when neither a Gemini API key nor a GCP project is configured."""
 
@@ -118,7 +126,7 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
 
     response = await asyncio.to_thread(
         get_client().models.generate_content,
-        model="gemini-2.5-flash",
+        model=MODEL,
         contents=[prompt]
     )
 
@@ -183,7 +191,7 @@ async def analyze_image(image_bytes: bytes, mime_type: str, user_email: str = No
 
     response = await asyncio.to_thread(
         get_client().models.generate_content,
-        model="gemini-2.5-flash",
+        model=MODEL,
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             prompt
@@ -227,7 +235,7 @@ async def analyze_audio(audio_bytes: bytes, mime_type: str, user_email: str = No
 
     response = await asyncio.to_thread(
         get_client().models.generate_content,
-        model="gemini-2.5-flash",
+        model=MODEL,
         contents=[
             types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
             prompt
@@ -270,7 +278,7 @@ async def analyze_video(video_bytes: bytes, mime_type: str, user_email: str = No
 
     response = await asyncio.to_thread(
         get_client().models.generate_content,
-        model="gemini-2.5-flash",
+        model=MODEL,
         contents=[
             types.Part.from_bytes(data=video_bytes, mime_type=mime_type),
             prompt
@@ -395,7 +403,7 @@ async def analyze_website(url: str, user_email: str = None, source: str = "manua
 
     response = await asyncio.to_thread(
         get_client().models.generate_content,
-        model="gemini-2.5-flash",
+        model=MODEL,
         contents=[prompt]
     )
 

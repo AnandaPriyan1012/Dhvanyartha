@@ -87,6 +87,11 @@ GEMINI_API_KEY=your-key-here
 > `gcloud auth application-default login`. The backend takes whichever it finds,
 > checking the API key first.
 
+> **On models:** scans use `gemini-flash-latest` by default, which tracks the
+> current fast model. Pinned older names like `gemini-2.5-flash` are no longer
+> served to new API keys and fail with a 404 on every scan. Override with
+> `GEMINI_MODEL` in `.env` if you need a specific version.
+
 ### 2. Start it
 
 From the project folder, double-click **`start.bat`** — or run:
