@@ -1,7 +1,7 @@
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from analyzer import (
     analyze_text,
@@ -13,6 +13,7 @@ from analyzer import (
     route_text_message,
     get_settings,
     save_settings,
+    UnsafeURLError,
 )
 from analytics import chart_decisions, chart_content_types, chart_timeline, summary_stats
 
@@ -24,6 +25,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(UnsafeURLError)
+async def unsafe_url_handler(request: Request, exc: UnsafeURLError):
+    """A rejected URL is the caller's mistake, so answer 400 rather than a 500."""
+    return JSONResponse(status_code=400, content={"type": "error", "message": str(exc)})
 
 
 class TextInput(BaseModel):
@@ -104,25 +111,30 @@ async def settings_post_endpoint(input: SettingsInput):
     return {"saved": True}
 
 
+# These four are deliberately `def`, not `async def`. They do blocking work (a
+# SQLite read plus a matplotlib render) with no awaits. Declared `async`, that work
+# runs directly on the event loop and stalls every other request until it finishes
+# — and the dashboard asks for three charts at once. As plain `def`, FastAPI runs
+# them on its worker threadpool instead, keeping the server responsive.
 @app.get("/analytics/summary")
-async def analytics_summary(user_email: Optional[str] = None):
+def analytics_summary(user_email: Optional[str] = None):
     return summary_stats(user_email)
 
 
 @app.get("/analytics/chart/decisions")
-async def analytics_chart_decisions(user_email: Optional[str] = None):
+def analytics_chart_decisions(user_email: Optional[str] = None):
     buf = chart_decisions(user_email)
     return StreamingResponse(buf, media_type="image/png")
 
 
 @app.get("/analytics/chart/content-types")
-async def analytics_chart_content_types(user_email: Optional[str] = None):
+def analytics_chart_content_types(user_email: Optional[str] = None):
     buf = chart_content_types(user_email)
     return StreamingResponse(buf, media_type="image/png")
 
 
 @app.get("/analytics/chart/timeline")
-async def analytics_chart_timeline(user_email: Optional[str] = None):
+def analytics_chart_timeline(user_email: Optional[str] = None):
     buf = chart_timeline(user_email)
     return StreamingResponse(buf, media_type="image/png")
 
@@ -150,7 +162,10 @@ async def chat_file_endpoint(
     user_email: Optional[str] = Form(None),
 ):
     file_bytes = await file.read()
-    mime = file.content_type
+    # content_type is None when the client sends no Content-Type header. Calling
+    # .startswith() on that raises AttributeError and returns a 500, instead of
+    # the friendly "unsupported file type" message this endpoint already has.
+    mime = file.content_type or ""
 
     if mime.startswith("image/"):
         result = await analyze_image(file_bytes, mime, user_email)

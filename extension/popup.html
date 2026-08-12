@@ -57,6 +57,20 @@
     margin-bottom: 8px;
   }
   #scanBtn:hover { filter: brightness(1.06); }
+
+  #clearBlockedBtn {
+    width: 100%;
+    padding: 9px;
+    border-radius: 10px;
+    border: 1px solid #e9e7e2;
+    background: #fff;
+    color: #86868b;
+    font-weight: 500;
+    font-size: 12.5px;
+    cursor: pointer;
+    margin-bottom: 8px;
+  }
+  #clearBlockedBtn:hover { color: #c96442; border-color: #c96442; }
   #scanStatus { font-size: 12px; color: #86868b; text-align: center; margin-bottom: 10px; min-height: 14px; }
 
   #dashboardLink {
@@ -92,6 +106,7 @@
   </div>
 
   <button id="scanBtn">Scan this page now</button>
+  <button id="clearBlockedBtn">Clear blocked pages</button>
   <div id="scanStatus"></div>
 </div>
 <div id="dashboardLink">Open parent dashboard</div>

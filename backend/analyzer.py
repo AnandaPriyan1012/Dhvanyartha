@@ -1,9 +1,12 @@
 import asyncio
 import google.auth
 import httpx
+import ipaddress
 import os
 import json
 import re
+import socket
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -15,29 +18,48 @@ load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
-client = genai.Client(
-    vertexai=True,
-    project=PROJECT_ID,
-    location="us-central1"
-)
+_client = None
+
+
+def get_client():
+    """Return the Vertex AI client, creating it on first use.
+
+    This used to be built at module import time, which meant importing anything
+    from this file required working GCP credentials — so no unit test and no CI
+    run could touch even the pure helpers like route_text_message(). Deferring
+    construction keeps the module importable everywhere; the client is still
+    created exactly once, on the first real analyze call.
+    """
+    global _client
+    if _client is None:
+        _client = genai.Client(
+            vertexai=True,
+            project=PROJECT_ID,
+            location="us-central1"
+        )
+    return _client
 
 
 def save_scan(content_type: str, input_summary: str, result: dict, user_email: str = None, source: str = "manual"):
     """Writes one scan result into the database, tagged with whoever was signed in."""
-    db = SessionLocal()
-    record = ScanRecord(
-        user_email=user_email,
-        source=source,
-        content_type=content_type,
-        input_summary=input_summary[:200],
-        moderation_decision=result.get("moderation_decision", "unknown"),
-        reason=result.get("reason", ""),
-        confidence=result.get("confidence", 0.0),
-        full_result=json.dumps(result)
-    )
-    db.add(record)
-    db.commit()
-    db.close()
+    # `with` guarantees the session is closed even if the commit raises. The old
+    # open/commit/close sequence leaked the connection on any failure.
+    with SessionLocal() as db:
+        record = ScanRecord(
+            user_email=user_email,
+            source=source,
+            content_type=content_type,
+            # The model can return an explicit null for description/transcript, in
+            # which case .get(key, default) yields None rather than the default and
+            # slicing it would raise.
+            input_summary=(input_summary or "")[:200],
+            moderation_decision=result.get("moderation_decision", "unknown"),
+            reason=result.get("reason", ""),
+            confidence=result.get("confidence", 0.0),
+            full_result=json.dumps(result)
+        )
+        db.add(record)
+        db.commit()
 
 
 async def analyze_text(text: str, user_email: str = None, source: str = "manual"):
@@ -72,7 +94,7 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
     """
 
     response = await asyncio.to_thread(
-        client.models.generate_content,
+        get_client().models.generate_content,
         model="gemini-2.5-flash",
         contents=[prompt]
     )
@@ -137,7 +159,7 @@ async def analyze_image(image_bytes: bytes, mime_type: str, user_email: str = No
     """
 
     response = await asyncio.to_thread(
-        client.models.generate_content,
+        get_client().models.generate_content,
         model="gemini-2.5-flash",
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
@@ -181,7 +203,7 @@ async def analyze_audio(audio_bytes: bytes, mime_type: str, user_email: str = No
     """
 
     response = await asyncio.to_thread(
-        client.models.generate_content,
+        get_client().models.generate_content,
         model="gemini-2.5-flash",
         contents=[
             types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
@@ -224,7 +246,7 @@ async def analyze_video(video_bytes: bytes, mime_type: str, user_email: str = No
     """
 
     response = await asyncio.to_thread(
-        client.models.generate_content,
+        get_client().models.generate_content,
         model="gemini-2.5-flash",
         contents=[
             types.Part.from_bytes(data=video_bytes, mime_type=mime_type),
@@ -241,17 +263,89 @@ async def analyze_video(video_bytes: bytes, mime_type: str, user_email: str = No
     return result
 
 
-async def fetch_website_text(url: str):
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client_http:
-        response = await client_http.get(url, headers={"User-Agent": "Mozilla/5.0"})
+class UnsafeURLError(ValueError):
+    """Raised when a URL points somewhere the backend must not fetch."""
 
-    soup = BeautifulSoup(response.text, "html.parser")
+
+def _assert_fetchable(url: str) -> None:
+    """Reject URLs that point at the machine or network the backend runs on.
+
+    /analyze-website fetches a caller-supplied URL and returns a model-written
+    summary of whatever came back, and no endpoint requires authentication. Without
+    this check the server acts as a read-anything proxy into places the caller
+    cannot reach directly — the router admin page on the home LAN, another service
+    bound to the parent's own laptop, or a cloud instance's metadata endpoint. CORS
+    is open to all origins, so any page open in the family's browser can trigger
+    the fetch and read the summary back.
+    """
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeURLError(f"Only http and https URLs can be scanned, not '{parsed.scheme}'")
+
+    host = parsed.hostname
+    if not host:
+        raise UnsafeURLError("That URL has no host to fetch")
+
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise UnsafeURLError(f"Could not resolve host '{host}'") from exc
+
+    for info in resolved:
+        # A perfectly public-looking hostname can still resolve to a private
+        # address, so judge the resolved IP rather than how the name looks.
+        raw_ip = info[4][0].split("%")[0]  # strip any IPv6 zone id
+        ip = ipaddress.ip_address(raw_ip)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise UnsafeURLError(
+                f"Refusing to fetch '{host}': it resolves to the non-public address {ip}"
+            )
+
+
+def _extract_text(html: str) -> str:
+    """Synchronous HTML -> visible text. Callers keep this off the event loop."""
+    soup = BeautifulSoup(html, "html.parser")
 
     for tag in soup(["script", "style"]):
         tag.decompose()
 
-    text = soup.get_text(separator=" ", strip=True)
-    return text[:8000]  # limit length so we don't send a massive page to Gemini
+    # limit length so we don't send a massive page to Gemini
+    return soup.get_text(separator=" ", strip=True)[:8000]
+
+
+MAX_REDIRECTS = 5
+
+
+async def fetch_website_text(url: str):
+    # Redirects are followed by hand so that every hop is checked. With httpx's
+    # own follow_redirects=True, a public URL that redirects to 127.0.0.1 would
+    # sail straight past a check done only on the original URL.
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client_http:
+        for _ in range(MAX_REDIRECTS):
+            await asyncio.to_thread(_assert_fetchable, url)
+            response = await client_http.get(url, headers={"User-Agent": "Mozilla/5.0"})
+
+            if not response.is_redirect:
+                break
+
+            next_request = response.next_request
+            if next_request is None:
+                break
+            url = str(next_request.url)
+        else:
+            raise UnsafeURLError(f"Gave up after {MAX_REDIRECTS} redirects")
+
+    # html.parser is pure Python and slow, and httpx's timeout is per-chunk rather
+    # than a cap on total body size — so a multi-megabyte page would otherwise be
+    # parsed for seconds directly on the event loop, stalling every other request,
+    # including the extension's /analyze-image calls (a page the child opens during
+    # that window is never moderated). Cap the input — only 8000 chars of text are
+    # ever kept anyway — and run the parse on a worker thread, the same
+    # asyncio.to_thread idiom already used for every Gemini call in this module.
+    html = response.text[:500_000]
+    return await asyncio.to_thread(_extract_text, html)
 
 
 async def analyze_website(url: str, user_email: str = None, source: str = "manual"):
@@ -277,7 +371,7 @@ async def analyze_website(url: str, user_email: str = None, source: str = "manua
     """
 
     response = await asyncio.to_thread(
-        client.models.generate_content,
+        get_client().models.generate_content,
         model="gemini-2.5-flash",
         contents=[prompt]
     )
@@ -292,19 +386,17 @@ async def analyze_website(url: str, user_email: str = None, source: str = "manua
 
 
 def get_scan_history(user_email: str = None, filter_decision: str = None, filter_source: str = None, limit: int = 20):
-    db = SessionLocal()
+    with SessionLocal() as db:
+        query = db.query(ScanRecord).order_by(ScanRecord.created_at.desc())
 
-    query = db.query(ScanRecord).order_by(ScanRecord.created_at.desc())
+        if user_email:
+            query = query.filter(ScanRecord.user_email == user_email)
+        if filter_decision:
+            query = query.filter(ScanRecord.moderation_decision == filter_decision)
+        if filter_source:
+            query = query.filter(ScanRecord.source == filter_source)
 
-    if user_email:
-        query = query.filter(ScanRecord.user_email == user_email)
-    if filter_decision:
-        query = query.filter(ScanRecord.moderation_decision == filter_decision)
-    if filter_source:
-        query = query.filter(ScanRecord.source == filter_source)
-
-    records = query.limit(limit).all()
-    db.close()
+        records = query.limit(limit).all()
 
     history = []
     for r in records:
@@ -324,53 +416,71 @@ def get_scan_history(user_email: str = None, filter_decision: str = None, filter
             "reason": r.reason,
             "confidence": r.confidence,
             "self_harm_signal": self_harm_signal,
-            "created_at": r.created_at.isoformat()
+            # created_at is nullable in the schema, and the dashboard calls
+            # new Date(...) on this value — guard so one row without a timestamp
+            # can't take down the whole history request.
+            "created_at": r.created_at.isoformat() if r.created_at else None
         })
     return history
 
 
 def get_settings(user_email: str):
-    db = SessionLocal()
-    row = db.query(ParentSettings).filter(ParentSettings.user_email == user_email).first()
-    db.close()
+    with SessionLocal() as db:
+        row = db.query(ParentSettings).filter(ParentSettings.user_email == user_email).first()
 
-    if not row:
+        if not row:
+            return {
+                "child_age": 18,
+                "blocked_categories": [],
+                "guard_enabled": True
+            }
+
+        # Read the values while the session is still open — once it closes the
+        # instance is detached and attribute access is no longer guaranteed.
         return {
-            "child_age": 18,
-            "blocked_categories": [],
-            "guard_enabled": True
+            "child_age": row.child_age,
+            "blocked_categories": json.loads(row.blocked_categories or "[]"),
+            "guard_enabled": row.guard_enabled
         }
-
-    return {
-        "child_age": row.child_age,
-        "blocked_categories": json.loads(row.blocked_categories or "[]"),
-        "guard_enabled": row.guard_enabled
-    }
 
 
 def save_settings(user_email: str, child_age: int, blocked_categories: list, guard_enabled: bool):
-    db = SessionLocal()
-    row = db.query(ParentSettings).filter(ParentSettings.user_email == user_email).first()
+    with SessionLocal() as db:
+        row = db.query(ParentSettings).filter(ParentSettings.user_email == user_email).first()
 
-    if row:
-        row.child_age = child_age
-        row.blocked_categories = json.dumps(blocked_categories)
-        row.guard_enabled = guard_enabled
-    else:
-        row = ParentSettings(
-            user_email=user_email,
-            child_age=child_age,
-            blocked_categories=json.dumps(blocked_categories),
-            guard_enabled=guard_enabled
-        )
-        db.add(row)
+        if row:
+            row.child_age = child_age
+            row.blocked_categories = json.dumps(blocked_categories)
+            row.guard_enabled = guard_enabled
+        else:
+            row = ParentSettings(
+                user_email=user_email,
+                child_age=child_age,
+                blocked_categories=json.dumps(blocked_categories),
+                guard_enabled=guard_enabled
+            )
+            db.add(row)
 
-    db.commit()
-    db.close()
+        db.commit()
 
 
 def route_text_message(text: str):
     text_lower = text.lower().strip()
+
+    # A URL is checked FIRST, and deliberately so. The history keywords below
+    # include very common words ("blocked", "flagged", "history"), and those words
+    # turn up inside perfectly ordinary links —
+    # https://en.wikipedia.org/wiki/History_of_India being the obvious one. When
+    # the keyword check ran first, pasting such a link returned the parent's own
+    # scan history and the site was never fetched or moderated at all, with
+    # nothing to signal it had been skipped. Someone who pastes a link wants that
+    # link checked; that intent is far less ambiguous than a stray keyword.
+    url_match = re.search(r'https?://[^\s<>"\']+', text)
+    if url_match:
+        # Trailing sentence punctuation is not part of the URL — "look at
+        # https://example.com." must not try to fetch a host ending in a period.
+        url = url_match.group(0).rstrip('.,;:!?)]}\'"')
+        return {"action": "website", "url": url}
 
     # Check if it's a history request
     history_keywords = ["history", "past scan", "what got blocked", "show me my", "blocked", "flagged"]
@@ -381,11 +491,6 @@ def route_text_message(text: str):
             return {"action": "history", "filter": "flag"}
         else:
             return {"action": "history", "filter": None}
-
-    # Check if it's a URL
-    url_pattern = re.findall(r'https?://\S+', text)
-    if url_pattern:
-        return {"action": "website", "url": url_pattern[0]}
 
     # Otherwise, treat it as plain text to moderate
     return {"action": "text", "content": text}

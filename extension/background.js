@@ -10,8 +10,26 @@ const API_BASE = "http://localhost:8000";
 
 let blockedUrls = {};
 const blockedUrlsReady = chrome.storage.local.get(["blockedUrls"]).then((data) => {
-  blockedUrls = data.blockedUrls || {};
+  // Merge, don't replace. A scan can finish and call rememberBlocked() before this
+  // load resolves — a plain assignment would silently discard that fresh block,
+  // letting a just-blocked page come straight back on reload.
+  blockedUrls = { ...(data.blockedUrls || {}), ...blockedUrls };
 });
+
+// Pages the extension must never try to screenshot: browser-internal pages cannot
+// be captured at all (the call throws), and the parent dashboard is our own UI.
+const NEVER_SCAN = [
+  /^chrome:\/\//i,
+  /^chrome-extension:\/\//i,
+  /^edge:\/\//i,
+  /^about:/i,
+  /^devtools:\/\//i,
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/)/i,
+];
+
+function shouldNeverScan(url) {
+  return !url || NEVER_SCAN.some((pattern) => pattern.test(url));
+}
 
 function normalizeUrl(url) {
   try {
@@ -50,7 +68,8 @@ async function getEffectiveSettings() {
   }
 }
 
-function rememberBlocked(url, reason) {
+async function rememberBlocked(url, reason) {
+  await blockedUrlsReady;
   blockedUrls[normalizeUrl(url)] = { reason, timestamp: Date.now() };
   chrome.storage.local.set({ blockedUrls });
 }
@@ -102,6 +121,12 @@ async function sendBlockMessage(tabId, reason, attempt = 1) {
 
 const lastScanAt = {}; // tabId -> timestamp, prevents redundant back-to-back scans
 
+// Tab ids are never reused, so without this the map grows for the whole life of
+// the service worker.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  delete lastScanAt[tabId];
+});
+
 async function scanTab(tabId, isManual, bypassDedup = false) {
   try {
     const now = Date.now();
@@ -120,7 +145,22 @@ async function scanTab(tabId, isManual, bypassDedup = false) {
 
     const tab = await chrome.tabs.get(tabId);
 
-    const screenshotUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 55 });
+    if (shouldNeverScan(tab.url)) {
+      console.log("[Dhvanyartha Guard] skipping page we never scan:", tab.url);
+      return;
+    }
+
+    // captureVisibleTab() photographs whichever tab is ACTIVE in the window — it
+    // cannot be pointed at a specific tab id. Auto-scans run on a delay (700ms and
+    // 2800ms after load), so by the time we get here the child may have switched
+    // tabs. Capturing anyway would judge THIS tab using ANOTHER tab's content,
+    // which both blocks innocent pages and lets flagged ones through.
+    if (!tab.active) {
+      console.log("[Dhvanyartha Guard] tab", tabId, "is no longer the visible tab, skipping scan");
+      return;
+    }
+
+    const screenshotUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 55 });
     const rawBlob = await (await fetch(screenshotUrl)).blob();
     const blob = await shrinkImage(rawBlob);
 
@@ -233,10 +273,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "checkBlocked") {
-    blockedUrlsReady.then(() => {
-      const entry = blockedUrls[normalizeUrl(message.url)];
-      sendResponse({ blocked: !!entry, reason: entry ? entry.reason : null });
-    });
+    // Honour the protection toggle here too. This memory is consulted on every
+    // page load before any scan runs, so without this check a page blocked earlier
+    // stays blocked forever even after a parent switches protection off — with no
+    // way to undo it from the UI.
+    Promise.all([blockedUrlsReady, chrome.storage.local.get(["guardEnabled"])])
+      .then(([, local]) => {
+        if (local.guardEnabled === false) {
+          sendResponse({ blocked: false, reason: null });
+          return;
+        }
+        const entry = blockedUrls[normalizeUrl(message.url)];
+        sendResponse({ blocked: !!entry, reason: entry ? entry.reason : null });
+      });
     return true; // keep the message channel open for the async response above
   }
 

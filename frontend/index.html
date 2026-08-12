@@ -856,6 +856,15 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
+// created_at can be null for a row saved without a timestamp. new Date(null)
+// silently renders as 1 Jan 1970, which reads as a real scan date, so return a
+// plain dash instead.
+function formatWhen(value) {
+  if (!value) return "—";
+  const when = new Date(value);
+  return isNaN(when.getTime()) ? "—" : when.toLocaleString();
+}
+
 function newChat() {
   const session = { id: Date.now().toString(), title: "New chat", messages: [], updatedAt: Date.now() };
   sessions.push(session);
@@ -921,6 +930,10 @@ function getCurrentUserEmail() {
 const ageSlider = document.getElementById("ageSlider");
 const ageValueEl = document.getElementById("ageValue");
 
+// False until we've successfully read the parent's saved settings. Guards against
+// saving the default control values over real settings we never managed to load.
+let settingsLoaded = false;
+
 if (ageSlider) {
   ageSlider.addEventListener("input", () => { ageValueEl.textContent = `${ageSlider.value} yrs`; });
 }
@@ -942,16 +955,30 @@ async function loadDashboard() {
   signedOutNotice.style.display = "none";
   dashContent.style.display = "block";
 
+  const saveBtn = document.getElementById("saveSettingsBtn");
+  const saveMsg = document.getElementById("saveSettingsMsg");
+
   try {
     const res = await fetch(`${settings.apiBase}/settings?user_email=${encodeURIComponent(email)}`);
+    if (!res.ok) throw new Error(`backend returned ${res.status}`);
     const data = await res.json();
     ageSlider.value = data.child_age || 10;
     ageValueEl.textContent = `${ageSlider.value} yrs`;
     getCategoryCheckboxes().forEach(cb => {
       cb.checked = (data.blocked_categories || []).includes(cb.value);
     });
+    settingsLoaded = true;
+    saveBtn.disabled = false;
+    saveMsg.textContent = "";
   } catch (err) {
+    // Saving now would post the untouched default controls (age 10, nothing
+    // blocked) straight over the parent's real saved settings. Refuse to save
+    // until we've actually seen what those settings are.
     console.error("Failed to load settings:", err);
+    settingsLoaded = false;
+    saveBtn.disabled = true;
+    saveMsg.style.color = "var(--block)";
+    saveMsg.textContent = "Couldn't load your settings — is the backend running? Saving is disabled so your existing settings aren't overwritten.";
   }
 
   loadDashboardHistory();
@@ -961,8 +988,15 @@ async function saveDashboardSettings() {
   const email = getCurrentUserEmail();
   if (!email) return;
 
-  const blocked_categories = getCategoryCheckboxes().filter(cb => cb.checked).map(cb => cb.value);
   const saveMsg = document.getElementById("saveSettingsMsg");
+
+  if (!settingsLoaded) {
+    saveMsg.style.color = "var(--block)";
+    saveMsg.textContent = "Not saving — your existing settings were never loaded.";
+    return;
+  }
+
+  const blocked_categories = getCategoryCheckboxes().filter(cb => cb.checked).map(cb => cb.value);
 
   try {
     await fetch(`${settings.apiBase}/settings`, {
@@ -975,9 +1009,11 @@ async function saveDashboardSettings() {
         guard_enabled: true
       })
     });
+    saveMsg.style.color = "var(--allow)";
     saveMsg.textContent = "Saved";
     setTimeout(() => { saveMsg.textContent = ""; }, 2000);
   } catch (err) {
+    saveMsg.style.color = "var(--block)";
     saveMsg.textContent = "Failed to save — is the backend running?";
   }
 }
@@ -1040,7 +1076,7 @@ async function loadDashboardHistory() {
     if (flagged.length) {
       bannerEl.className = "attention-banner";
       bannerEl.innerHTML = `<strong>⚠ Needs your attention:</strong> a recent scan detected a possible sign of
-        self-harm or emotional distress (${new Date(flagged[0].created_at).toLocaleString()}). Please check in.`;
+        self-harm or emotional distress (${escapeHTML(formatWhen(flagged[0].created_at))}). Please check in.`;
     } else {
       bannerEl.innerHTML = "";
       bannerEl.className = "";
@@ -1053,8 +1089,8 @@ async function loadDashboardHistory() {
 
     listEl.innerHTML = results.map(r => `
       <div class="dash-history-item">
-        <div class="meta">${r.content_type.toUpperCase()} · ${new Date(r.created_at).toLocaleString()}</div>
-        <span class="dash-badge ${r.moderation_decision}">${r.moderation_decision}</span>
+        <div class="meta">${escapeHTML(String(r.content_type || "").toUpperCase())} · ${escapeHTML(formatWhen(r.created_at))}</div>
+        <span class="dash-badge ${escapeHTML(String(r.moderation_decision || ""))}">${escapeHTML(String(r.moderation_decision || ""))}</span>
         ${r.self_harm_signal ? `<span class="dash-badge attention">needs attention</span>` : ""}
         <div>${escapeHTML(r.input_summary)}</div>
         <div style="color:var(--ink-dim); font-size:12px; margin-top:2px;">${escapeHTML(r.reason)}</div>
@@ -1116,7 +1152,10 @@ function addThinkingRowLive(label) {
 
 function badgeHTML(decision) {
   if (!decision) return "";
-  return `<span class="badge ${decision}">${decision}</span>`;
+  // decision comes from the model, so it is not guaranteed to be one of
+  // allow/flag/block — escape it rather than dropping it straight into innerHTML.
+  const safe = escapeHTML(String(decision));
+  return `<span class="badge ${safe}">${safe}</span>`;
 }
 
 function isEnglish(lang) {
@@ -1201,7 +1240,7 @@ function historyHTML(results) {
   if (!results.length) return "<div style='color:var(--ink-dim)'>No scans recorded yet.</div>";
   return results.map(r => `
     <div class="history-item">
-      <div class="meta">${r.content_type.toUpperCase()} · ${new Date(r.created_at).toLocaleString()}</div>
+      <div class="meta">${escapeHTML(String(r.content_type || "").toUpperCase())} · ${escapeHTML(formatWhen(r.created_at))}</div>
       ${badgeHTML(r.moderation_decision)}
       <div class="summary">${escapeHTML(r.input_summary)}</div>
       <div class="reason">${escapeHTML(r.reason)}</div>

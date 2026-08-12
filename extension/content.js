@@ -107,7 +107,14 @@ function showBlockOverlay(reason) {
   document.documentElement.appendChild(overlay);
 
   document.getElementById("dhv-guard-back").addEventListener("click", () => {
-    history.back();
+    // A page opened in a fresh tab has nothing to go back to, so history.back()
+    // would do nothing at all and leave the child facing a dead button on top of
+    // a blocked page. Fall back to a blank page in that case.
+    if (window.history.length > 1) {
+      history.back();
+    } else {
+      window.location.replace("about:blank");
+    }
   });
 }
 
