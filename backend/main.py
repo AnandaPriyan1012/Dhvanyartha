@@ -15,6 +15,7 @@ from analyzer import (
     save_settings,
     get_client,
     MissingCredentialsError,
+    ModelError,
     UnsafeURLError,
 )
 from analytics import chart_decisions, chart_content_types, chart_timeline, summary_stats
@@ -33,6 +34,14 @@ app.add_middleware(
 async def missing_credentials_handler(request: Request, exc: MissingCredentialsError):
     """Setup isn't finished — say exactly what to do rather than returning a 500."""
     return JSONResponse(status_code=503, content={"type": "error", "message": str(exc)})
+
+
+@app.exception_handler(ModelError)
+async def model_error_handler(request: Request, exc: ModelError):
+    """Say what actually went wrong. A quota or key problem returning a bare 500 is
+    indistinguishable from the feature being broken, which is how an exhausted
+    free-tier quota went unnoticed for a whole session."""
+    return JSONResponse(status_code=502, content={"type": "error", "message": str(exc)})
 
 
 @app.exception_handler(UnsafeURLError)

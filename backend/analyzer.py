@@ -18,13 +18,18 @@ load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
-# Which Gemini model to use for every scan. This was hardcoded to gemini-2.5-flash
-# in five places, and Google has since stopped serving that model to new API keys —
-# every scan failed with a 404 that read like a broken feature rather than a
-# retired model. "gemini-flash-latest" tracks the current fast model so this cannot
-# go stale the same way; set GEMINI_MODEL in .env to pin a specific version if you
-# would rather have byte-stable behaviour than automatic upgrades.
-MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+# Which Gemini model to use for image, audio, video and website scans.
+#
+# Two things pushed this to flash-lite. It was originally hardcoded to
+# gemini-2.5-flash in five places, which Google no longer serves to new API keys,
+# so every scan 404'd. Then gemini-flash-latest ran out of free-tier quota within
+# a day of normal use - screenshotting every page a child opens is a lot of vision
+# calls - and every scan started failing again. flash-lite handles these
+# screenshots in about 2s and has far more headroom on the free tier.
+#
+# Set GEMINI_MODEL in .env to something stronger if you have billing enabled and
+# want more careful judgement on images.
+MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # Text scans - above all the search queries the extension judges before a results
 # page renders - sit directly in front of a page load, so latency is felt. Measured
@@ -36,6 +41,10 @@ FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-flash-lite-latest")
 
 class MissingCredentialsError(RuntimeError):
     """Raised when neither a Gemini API key nor a GCP project is configured."""
+
+
+class ModelError(RuntimeError):
+    """Raised when the Gemini call itself fails, or returns something unusable."""
 
 
 _client = None
@@ -77,6 +86,55 @@ def get_client():
                 "run `gcloud auth application-default login`."
             )
     return _client
+
+
+async def _generate_json(model: str, contents: list) -> dict:
+    """Run one Gemini call and parse its JSON reply.
+
+    Every analyze function used to inline this, and both of the ways it reliably
+    fails in practice surfaced as a bare HTTP 500 with no message: the API
+    refusing the call (quota exhausted, bad key, retired model), and the model
+    replying with something that is not quite JSON. From the extension both look
+    identical to the feature simply being broken, which is exactly how an
+    exhausted free-tier quota went unnoticed. Translate them into something a
+    person can act on.
+    """
+    try:
+        response = await asyncio.to_thread(
+            get_client().models.generate_content,
+            model=model,
+            contents=contents,
+        )
+    except MissingCredentialsError:
+        raise
+    except Exception as exc:
+        text = str(exc)
+        if "RESOURCE_EXHAUSTED" in text or "429" in text:
+            raise ModelError(
+                f"Gemini quota exhausted for '{model}'. Free-tier keys have daily "
+                "limits, and screenshotting every page uses them quickly. Wait for "
+                "the reset, point GEMINI_MODEL / GEMINI_FAST_MODEL at a model you "
+                "still have quota on, or enable billing on the key."
+            ) from exc
+        if "PERMISSION_DENIED" in text or "API key not valid" in text or "401" in text or "403" in text:
+            raise ModelError(
+                "Gemini rejected the API key. Check GEMINI_API_KEY in backend/.env."
+            ) from exc
+        if "NOT_FOUND" in text or "404" in text:
+            raise ModelError(
+                f"Model '{model}' is not available to this key. Set GEMINI_MODEL in "
+                "backend/.env to one that is."
+            ) from exc
+        raise ModelError(f"Gemini call failed: {text[:300]}") from exc
+
+    raw = (response.text or "").strip()
+    clean = raw.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError as exc:
+        raise ModelError(
+            f"The model replied with something that is not JSON: {clean[:200]}"
+        ) from exc
 
 
 def save_scan(content_type: str, input_summary: str, result: dict, user_email: str = None, source: str = "manual"):
@@ -147,15 +205,7 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
     - Return ONLY JSON, no extra text
     """
 
-    response = await asyncio.to_thread(
-        get_client().models.generate_content,
-        model=FAST_MODEL,
-        contents=[prompt]
-    )
-
-    raw = response.text
-    clean = raw.strip().replace("```json", "").replace("```", "")
-    result = json.loads(clean)
+    result = await _generate_json(FAST_MODEL, [prompt])
 
     save_scan("text", text, result, user_email, source)
 
@@ -212,18 +262,10 @@ async def analyze_image(image_bytes: bytes, mime_type: str, user_email: str = No
     Return ONLY JSON, no extra text.
     """
 
-    response = await asyncio.to_thread(
-        get_client().models.generate_content,
-        model=MODEL,
-        contents=[
+    result = await _generate_json(MODEL, [
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             prompt
-        ]
-    )
-
-    raw = response.text
-    clean = raw.strip().replace("```json", "").replace("```", "")
-    result = json.loads(clean)
+        ])
 
     save_scan("image", result.get("description", "image scan"), result, user_email, source)
 
@@ -256,18 +298,10 @@ async def analyze_audio(audio_bytes: bytes, mime_type: str, user_email: str = No
     - Return ONLY JSON, no extra text
     """
 
-    response = await asyncio.to_thread(
-        get_client().models.generate_content,
-        model=MODEL,
-        contents=[
+    result = await _generate_json(MODEL, [
             types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
             prompt
-        ]
-    )
-
-    raw = response.text
-    clean = raw.strip().replace("```json", "").replace("```", "")
-    result = json.loads(clean)
+        ])
 
     save_scan("audio", result.get("transcript", "audio scan"), result, user_email, source)
 
@@ -299,18 +333,10 @@ async def analyze_video(video_bytes: bytes, mime_type: str, user_email: str = No
     - Return ONLY JSON, no extra text
     """
 
-    response = await asyncio.to_thread(
-        get_client().models.generate_content,
-        model=MODEL,
-        contents=[
+    result = await _generate_json(MODEL, [
             types.Part.from_bytes(data=video_bytes, mime_type=mime_type),
             prompt
-        ]
-    )
-
-    raw = response.text
-    clean = raw.strip().replace("```json", "").replace("```", "")
-    result = json.loads(clean)
+        ])
 
     save_scan("video", result.get("description", "video scan"), result, user_email, source)
 
@@ -424,15 +450,7 @@ async def analyze_website(url: str, user_email: str = None, source: str = "manua
     Return ONLY JSON, no extra text.
     """
 
-    response = await asyncio.to_thread(
-        get_client().models.generate_content,
-        model=MODEL,
-        contents=[prompt]
-    )
-
-    raw = response.text
-    clean = raw.strip().replace("```json", "").replace("```", "")
-    result = json.loads(clean)
+    result = await _generate_json(MODEL, [prompt])
 
     save_scan("website", url, result, user_email, source)
 
