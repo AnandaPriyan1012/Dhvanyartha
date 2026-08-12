@@ -1,127 +1,491 @@
 // content.js
-// Injected into every page. Shows a floating scan toolbar, a results toast,
-// and the full-page blocking overlay when background.js flags a page.
+// The on-page HUD: a small capsule that hovers over every page, reports what the
+// last scan concluded, and expands on hover to offer manual scans. Also renders
+// the full-page block overlay.
+//
+// Everything lives inside a Shadow DOM. The previous version injected plain
+// elements into the page's own DOM, which meant any site with aggressive CSS
+// could restyle, hide, or break the guard UI - including the block overlay,
+// which must not be defeatable by the page it is covering.
 
-/* ---------- toolbar ---------- */
+const HOST_ID = "dhv-guard-host";
 
-function injectToolbar() {
-  if (document.getElementById("dhv-toolbar")) return;
+const STYLES = `
+  :host { all: initial; }
 
-  chrome.storage.local.get(["toolbarHidden"], (data) => {
-    if (data.toolbarHidden) return;
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    const bar = document.createElement("div");
-    bar.id = "dhv-toolbar";
-    bar.innerHTML = `
-      <div class="dhv-tb-brand">
-        <span class="dhv-tb-dot"></span> Dhvanyartha
-      </div>
-      <div class="dhv-tb-divider"></div>
-      <button class="dhv-tb-btn" id="dhv-scan-selection">Scan Selection</button>
-      <div class="dhv-tb-divider"></div>
-      <button class="dhv-tb-btn" id="dhv-scan-page">Scan Page</button>
-      <div class="dhv-tb-divider"></div>
-      <button class="dhv-tb-icon" id="dhv-settings" title="Settings">⚙</button>
-      <button class="dhv-tb-icon" id="dhv-close" title="Hide toolbar">×</button>
-    `;
-    document.documentElement.appendChild(bar);
+  :host {
+    --void: #17151c;
+    --shell: #221f2a;
+    --seam: #322e3b;
+    --ink: #ece9f2;
+    --ash: #9791a8;
+    --faint: #6b6578;
+    --ember: #d9805c;
+    --clear: #4cba75;
+    --watch: #dba449;
+    --halt: #de6d60;
 
-    document.getElementById("dhv-scan-page").addEventListener("click", (e) => {
-      setBtnLoading(e.target, "Scanning...");
-      chrome.runtime.sendMessage({ action: "scanNow" });
-    });
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
 
-    document.getElementById("dhv-scan-selection").addEventListener("click", (e) => {
-      const text = window.getSelection().toString().trim();
-      if (!text) {
-        showToast({ blocked: false }, { description: "Select some text on the page first." }, true);
-        return;
-      }
-      setBtnLoading(e.target, "Scanning...");
-      chrome.runtime.sendMessage({ action: "scanSelection", text });
-    });
+  /* ---------- the capsule ---------- */
 
-    document.getElementById("dhv-settings").addEventListener("click", () => {
-      chrome.runtime.sendMessage({ action: "openDashboard" });
-    });
+  .hud {
+    position: fixed;
+    z-index: 2147483646;
+    display: flex;
+    align-items: stretch;
+    overflow: hidden;
 
-    document.getElementById("dhv-close").addEventListener("click", () => {
-      bar.remove();
-      chrome.storage.local.set({ toolbarHidden: true });
-    });
+    background: color-mix(in srgb, var(--shell) 88%, transparent);
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    border: 1px solid var(--seam);
+    border-radius: 11px;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38);
+
+    font-family: var(--sans);
+    color: var(--ink);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+
+    /* At rest it should be easy to ignore. It wakes on approach. */
+    opacity: 0.42;
+    transition: opacity 0.22s ease, box-shadow 0.22s ease;
+  }
+  .hud:hover,
+  .hud:focus-within,
+  .hud.is-busy,
+  .hud.is-alert {
+    opacity: 1;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+  .hud.is-dragging { cursor: grabbing; opacity: 1; }
+
+  /* The verdict rail: a coloured spine holding the last judgement. */
+  .rail {
+    width: 3px;
+    flex: none;
+    background: var(--faint);
+    transition: background 0.3s ease;
+  }
+  .hud[data-verdict="allow"]   .rail { background: var(--clear); }
+  .hud[data-verdict="flag"]    .rail { background: var(--watch); }
+  .hud[data-verdict="block"]   .rail { background: var(--halt); }
+  .hud[data-verdict="scanning"] .rail { background: var(--ember); }
+
+  .body { display: flex; align-items: center; }
+
+  /* ---------- always-visible core ---------- */
+
+  .core {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 11px;
+    height: 30px;
+    flex: none;
+  }
+
+  .status {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ash);
+    white-space: nowrap;
+    transition: color 0.25s ease;
+  }
+  .hud[data-verdict="block"] .status { color: var(--halt); }
+  .hud[data-verdict="flag"]  .status { color: var(--watch); }
+
+  /* ---------- the reveal ---------- */
+
+  .reveal {
+    display: flex;
+    align-items: center;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-width 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+  }
+  .hud:hover .reveal,
+  .hud:focus-within .reveal,
+  .hud.is-alert .reveal {
+    max-width: 460px;
+    opacity: 1;
+  }
+
+  .divider { width: 1px; align-self: stretch; background: var(--seam); flex: none; }
+
+  .detail {
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--ash);
+    padding: 0 12px;
+    max-width: 270px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .detail:empty { display: none; }
+
+  .actions { display: flex; align-items: center; gap: 2px; padding: 0 5px; flex: none; }
+
+  button {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ash);
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--ink); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--ember); outline-offset: -1px; }
+  .close { color: var(--faint); padding: 6px 8px; }
+  .close:hover { color: var(--halt); background: rgba(222, 109, 96, 0.12); }
+
+  /* ---------- signature: the scan sweep ---------- */
+  /* A hairline of light travelling the capsule while the page is being judged.
+     It mirrors what is actually happening: the screen is being photographed. */
+
+  .sweep {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+  }
+  .hud.is-busy .sweep { opacity: 1; }
+  .sweep::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 34%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--ember) 26%, transparent),
+      transparent
+    );
+    animation: sweep 1.15s ease-in-out infinite;
+  }
+  @keyframes sweep {
+    from { transform: translateX(-120%); }
+    to   { transform: translateX(390%); }
+  }
+
+  /* ---------- block overlay ---------- */
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
+    background: var(--void);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--sans);
+    padding: 24px;
+  }
+
+  .card {
+    background: var(--shell);
+    border: 1px solid var(--seam);
+    border-radius: 18px;
+    padding: 40px 44px;
+    max-width: 400px;
+    text-align: center;
+    color: var(--ink);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  }
+  .card .mark {
+    width: 3px;
+    height: 34px;
+    margin: 0 auto 22px;
+    border-radius: 2px;
+    background: var(--halt);
+  }
+  .card .eyebrow {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--halt);
+    margin-bottom: 12px;
+  }
+  .card h1 { font-size: 19px; font-weight: 600; margin-bottom: 12px; }
+  .card p { font-size: 13.5px; line-height: 1.6; color: var(--ash); margin-bottom: 26px; }
+  .card button {
+    background: var(--ember);
+    color: #1a1016;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 22px;
+    border-radius: 10px;
+  }
+  .card button:hover { background: var(--ember); filter: brightness(1.1); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+`;
+
+/* ---------- shadow host ---------- */
+
+let shadow = null;
+let hud = null;
+let statusEl = null;
+let detailEl = null;
+let settleTimer = null;
+
+function getShadow() {
+  if (shadow) return shadow;
+  const host = document.createElement("div");
+  host.id = HOST_ID;
+  // The host itself must not be affected by page layout.
+  host.style.cssText = "all: initial; position: static;";
+  shadow = host.attachShadow({ mode: "open" });
+
+  const style = document.createElement("style");
+  style.textContent = STYLES;
+  shadow.appendChild(style);
+
+  document.documentElement.appendChild(host);
+  return shadow;
+}
+
+/* ---------- HUD ---------- */
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  // textContent, never innerHTML: everything shown here is model output or a
+  // page-supplied string.
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+async function buildHud() {
+  const { toolbarHidden } = await chrome.storage.local.get(["toolbarHidden"]);
+  if (toolbarHidden) return;
+
+  const root = getShadow();
+  if (root.querySelector(".hud")) return;
+
+  hud = el("div", "hud");
+  hud.setAttribute("data-verdict", "idle");
+  hud.tabIndex = 0;
+
+  hud.appendChild(el("div", "sweep"));
+  hud.appendChild(el("div", "rail"));
+
+  const body = el("div", "body");
+
+  const core = el("div", "core");
+  statusEl = el("span", "status", "Watching");
+  core.appendChild(statusEl);
+  body.appendChild(core);
+
+  const reveal = el("div", "reveal");
+  detailEl = el("span", "detail");
+  reveal.appendChild(detailEl);
+  reveal.appendChild(el("div", "divider"));
+
+  const actions = el("div", "actions");
+  const scanBtn = el("button", null, "Scan page");
+  const selBtn = el("button", null, "Selection");
+  const closeBtn = el("button", "close", "×");
+  closeBtn.title = "Hide until next reload";
+  actions.append(scanBtn, selBtn, closeBtn);
+  reveal.appendChild(actions);
+
+  body.appendChild(reveal);
+  hud.appendChild(body);
+  root.appendChild(hud);
+
+  scanBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setState("scanning", "Checking", "");
+    chrome.runtime.sendMessage({ action: "scanNow" });
+  });
+
+  selBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const text = window.getSelection().toString().trim();
+    if (!text) {
+      setState("idle", "Watching", "Select some text on the page first.");
+      return;
+    }
+    setState("scanning", "Checking", "");
+    chrome.runtime.sendMessage({ action: "scanSelection", text });
+  });
+
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    hud.remove();
+    chrome.storage.local.set({ toolbarHidden: true });
+  });
+
+  await restorePosition();
+  makeDraggable();
+}
+
+/* ---------- position: edge-snapped and remembered ---------- */
+
+const EDGE_GAP = 14;
+
+async function restorePosition() {
+  const { hudPosition } = await chrome.storage.local.get(["hudPosition"]);
+  const pos = hudPosition || { side: "right", topRatio: 0.82 };
+  applyPosition(pos);
+}
+
+function applyPosition(pos) {
+  const height = hud.offsetHeight || 32;
+  const maxTop = Math.max(EDGE_GAP, window.innerHeight - height - EDGE_GAP);
+  const top = Math.min(maxTop, Math.max(EDGE_GAP, pos.topRatio * window.innerHeight));
+
+  hud.style.top = `${top}px`;
+  if (pos.side === "left") {
+    hud.style.left = `${EDGE_GAP}px`;
+    hud.style.right = "auto";
+  } else {
+    hud.style.right = `${EDGE_GAP}px`;
+    hud.style.left = "auto";
+  }
+}
+
+function makeDraggable() {
+  let startX = 0, startY = 0, originLeft = 0, originTop = 0, dragging = false;
+
+  hud.addEventListener("pointerdown", (e) => {
+    // Buttons keep their own behaviour.
+    if (e.target.closest("button")) return;
+    dragging = true;
+    hud.classList.add("is-dragging");
+    hud.setPointerCapture(e.pointerId);
+
+    const rect = hud.getBoundingClientRect();
+    originLeft = rect.left;
+    originTop = rect.top;
+    startX = e.clientX;
+    startY = e.clientY;
+
+    // Switch to left-anchored while dragging so movement maps 1:1.
+    hud.style.left = `${originLeft}px`;
+    hud.style.right = "auto";
+  });
+
+  hud.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    hud.style.left = `${originLeft + (e.clientX - startX)}px`;
+    hud.style.top = `${originTop + (e.clientY - startY)}px`;
+  });
+
+  const finish = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    hud.classList.remove("is-dragging");
+
+    // Snap to whichever vertical edge is nearer, the way a persistent overlay
+    // should behave - it never ends up stranded mid-screen over content.
+    const rect = hud.getBoundingClientRect();
+    const side = rect.left + rect.width / 2 < window.innerWidth / 2 ? "left" : "right";
+    const topRatio = rect.top / window.innerHeight;
+
+    const pos = { side, topRatio };
+    applyPosition(pos);
+    chrome.storage.local.set({ hudPosition: pos });
+    if (e && e.pointerId !== undefined && hud.hasPointerCapture(e.pointerId)) {
+      hud.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  hud.addEventListener("pointerup", finish);
+  hud.addEventListener("pointercancel", finish);
+
+  window.addEventListener("resize", async () => {
+    const { hudPosition } = await chrome.storage.local.get(["hudPosition"]);
+    if (hud && hud.isConnected) applyPosition(hudPosition || { side: "right", topRatio: 0.82 });
   });
 }
 
-function setBtnLoading(btn, label) {
-  const original = btn.textContent;
-  btn.textContent = label;
-  btn.disabled = true;
-  setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+/* ---------- state ---------- */
+
+function setState(verdict, status, detail) {
+  if (!hud || !hud.isConnected) return;
+  clearTimeout(settleTimer);
+
+  hud.setAttribute("data-verdict", verdict);
+  hud.classList.toggle("is-busy", verdict === "scanning");
+  // A block holds itself open; everything else stays collapsed unless hovered.
+  hud.classList.toggle("is-alert", verdict === "block" || verdict === "flag");
+
+  statusEl.textContent = status;
+  detailEl.textContent = detail || "";
+
+  if (verdict === "flag" || verdict === "block") {
+    settleTimer = setTimeout(() => hud.classList.remove("is-alert"), 6000);
+  }
 }
 
-/* ---------- results toast ---------- */
+function showVerdict(decision, result, isAuto) {
+  if (decision.blocked) {
+    setState("block", "Blocked", decision.reason || result.reason || "This page was blocked.");
+    return;
+  }
 
-function showToast(decision, result, isNote, isAuto) {
-  const existing = document.getElementById("dhv-toast");
-  if (existing) existing.remove();
+  const flagged = result.moderation_decision === "flag";
+  if (flagged) {
+    setState("flag", "Flagged", result.reason || "Worth a look.");
+    return;
+  }
 
-  const toast = document.createElement("div");
-  toast.id = "dhv-toast";
-  if (isAuto) toast.classList.add("dhv-toast-auto");
-
-  const badgeClass = isNote ? "note" : (decision.blocked ? "blocked" : "allowed");
-  const badgeText = isNote ? "info" : (decision.blocked ? "blocked" : "safe");
-  const message = decision.blocked
-    ? (decision.reason || result.reason || "This content was blocked.")
-    : (isAuto ? "This page looks fine." : (result.reason || result.description || "Scan complete — nothing concerning found."));
-
-  toast.innerHTML = `
-    <span class="dhv-toast-badge ${badgeClass}">${badgeText}</span>
-    <span class="dhv-toast-msg">${escapeHTML(message)}</span>
-    <button class="dhv-toast-close" id="dhv-toast-close">×</button>
-  `;
-  document.documentElement.appendChild(toast);
-
-  document.getElementById("dhv-toast-close").addEventListener("click", () => toast.remove());
-  setTimeout(() => { if (toast.parentNode) toast.remove(); }, isAuto ? 3200 : 6000);
+  setState("allow", "Safe", isAuto ? "" : (result.reason || result.description || "Nothing concerning found."));
 }
 
 /* ---------- block overlay ---------- */
 
 function showBlockOverlay(reason) {
-  if (document.getElementById("dhv-guard-overlay")) return;
+  const root = getShadow();
+  if (root.querySelector(".overlay")) return;
 
-  // Freeze the page underneath so scrolling/keyboard can't reveal content past the overlay
+  // Freeze the page underneath so scrolling cannot reveal content past the overlay.
   document.documentElement.style.overflow = "hidden";
 
-  const overlay = document.createElement("div");
-  overlay.id = "dhv-guard-overlay";
-  overlay.innerHTML = `
-    <div class="dhv-guard-card">
-      <div class="dhv-guard-mark"></div>
-      <h1>This page is blocked</h1>
-      <p>${escapeHTML(reason || "This content isn't appropriate for the age set on this device.")}</p>
-      <button id="dhv-guard-back">Go back</button>
-    </div>
-  `;
-  document.documentElement.appendChild(overlay);
+  const overlay = el("div", "overlay");
+  const card = el("div", "card");
+  card.appendChild(el("div", "mark"));
+  card.appendChild(el("div", "eyebrow", "Dhvanyartha Guard"));
+  card.appendChild(el("h1", null, "This page is blocked"));
+  card.appendChild(el("p", null, reason || "This content isn't appropriate for the age set on this device."));
 
-  document.getElementById("dhv-guard-back").addEventListener("click", () => {
+  const back = el("button", null, "Go back");
+  back.addEventListener("click", () => {
     // A page opened in a fresh tab has nothing to go back to, so history.back()
-    // would do nothing at all and leave the child facing a dead button on top of
-    // a blocked page. Fall back to a blank page in that case.
+    // would do nothing and leave a dead button on top of a blocked page.
     if (window.history.length > 1) {
       history.back();
     } else {
       window.location.replace("about:blank");
     }
   });
-}
+  card.appendChild(back);
 
-function escapeHTML(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
+  overlay.appendChild(card);
+  root.appendChild(overlay);
 }
 
 /* ---------- messages from background.js ---------- */
@@ -129,35 +493,33 @@ function escapeHTML(str) {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "block") {
     showBlockOverlay(message.reason);
+    setState("block", "Blocked", message.reason || "");
   } else if (message.action === "scanResult") {
-    showToast(message.decision, message.result, false, message.auto);
+    showVerdict(message.decision || {}, message.result || {}, message.auto);
+  } else if (message.action === "scanStarted") {
+    setState("scanning", "Checking", "");
   }
   return false;
 });
 
-// Ask background.js right away whether this exact page was already blocked before —
-// this is what stops a reload from briefly showing blocked content while a fresh
-// scan is still running.
+/* ---------- boot ---------- */
+
+buildHud();
+
+// Ask background.js immediately whether this exact page was already blocked.
+// This is what stops a reload briefly showing blocked content while a fresh scan
+// is still running.
 chrome.runtime.sendMessage({ action: "checkBlocked", url: location.href }, (response) => {
-  if (response && response.blocked) {
-    showBlockOverlay(response.reason);
-  }
+  if (chrome.runtime.lastError) return;
+  if (response && response.blocked) showBlockOverlay(response.reason);
 });
 
-injectToolbar();
-
-// If this page IS the Dhvanyartha web app, sync whichever Google account is
-// signed in there into the extension's storage — this is what lets extension
-// scans (screenshot scans, selection scans) show up under the right parent
-// in the web app's own dashboard.
-const isWebAppOrigin = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-const isWebAppPort = location.port === "5500";
-console.log("[Dhvanyartha Guard] page origin check:", location.origin, "-> web app match:", isWebAppOrigin && isWebAppPort);
-
-if (isWebAppOrigin && isWebAppPort) {
+// If this page IS the Dhvanyartha dashboard, sync whichever Google account is
+// signed in there into the extension's storage. This is what lets extension scans
+// show up under the right parent in the dashboard.
+if ((location.hostname === "localhost" || location.hostname === "127.0.0.1") && location.port === "5500") {
   try {
     const savedUser = JSON.parse(localStorage.getItem("dhv_user") || "null");
-    console.log("[Dhvanyartha Guard] syncing parent email from web app:", savedUser ? savedUser.email : null);
     chrome.runtime.sendMessage({ action: "linkParent", email: savedUser ? savedUser.email : null });
   } catch (err) {
     console.error("[Dhvanyartha Guard] failed to read signed-in user from web app:", err.message);

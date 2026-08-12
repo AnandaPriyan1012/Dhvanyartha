@@ -160,6 +160,10 @@ async function scanTab(tabId, isManual, bypassDedup = false) {
       return;
     }
 
+    // Let the HUD start its scan animation, so the user can see that something is
+    // happening during the second or two the model takes to answer.
+    chrome.tabs.sendMessage(tabId, { action: "scanStarted" }).catch(() => {});
+
     const screenshotUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 55 });
     const rawBlob = await (await fetch(screenshotUrl)).blob();
     const blob = await shrinkImage(rawBlob);

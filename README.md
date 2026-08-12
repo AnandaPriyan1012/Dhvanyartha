@@ -145,10 +145,27 @@ household running its own server, not to be installed by strangers.
 
 ### Checking it works
 
-Open any web page. Within a few seconds a small toast should appear at the bottom
-of the screen reporting the scan. If nothing happens, open the extension's service
-worker console from `chrome://extensions` — every step logs there with a
-`[Dhvanyartha Guard]` prefix.
+Open any web page. A small capsule sits against the right edge of the screen
+reading **Watching**. When a scan runs it sweeps and reads **Checking**, then
+settles on the verdict — the coloured spine along its edge holds that verdict
+until the next scan. Hover it to see the reason and to run a manual scan; drag it
+anywhere and it snaps to the nearest edge and stays there.
+
+The whole HUD lives in a Shadow DOM, so no page's CSS can restyle or hide it —
+which matters most for the block overlay, since that must not be defeatable by the
+page it is covering.
+
+If nothing appears:
+
+- Pages open **before** the extension loaded need a refresh — content scripts only
+  inject on page load.
+- If you previously dismissed the HUD with `×`, that is remembered across all
+  pages. Turn **Show floating toolbar** back on in the extension popup.
+- Chrome forbids content scripts on `chrome://` pages, the Chrome Web Store, PDFs,
+  and other extensions' pages. Nothing can run there.
+
+For anything else, open the service worker console from `chrome://extensions` —
+every step logs with a `[Dhvanyartha Guard]` prefix.
 
 ---
 
