@@ -184,8 +184,22 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
     trying to reach, not only the words themselves: "how to make a bomb" is harmful
     intent even though it is a mild-looking phrase.
 
-    For "min_age": the recommended minimum age of someone who should see this
-    content or make this search, as one of 0, 7, 13, 16 or 18 (0 = fine for all ages).
+    For "min_age": the youngest age this is genuinely unsuitable below, as one of
+    0, 7, 13, 16 or 18 (0 = fine for all ages).
+
+    Calibrate this carefully. Being too strict is a real failure, not a safe
+    default: a child blocked from their own homework learns the tool is broken and
+    finds a way around it.
+    - Educational, historical, journalistic, medical or sporting treatment of a
+      difficult subject is NOT adult content. "world war 2 battle history", "how
+      do vaccines work", "boxing highlights", "causes of the partition of India"
+      are 0 or 7.
+    - Use 13 for genuinely mature themes, 16 for graphic or explicit material, and
+      18 only for pornography, gratuitous gore, or practical instructions for
+      seriously harming someone.
+    - Judge what the person is trying to REACH, not whether a heavy word appears.
+      "how to make a bomb at home" is 18 because of the intent behind it. "why did
+      the atomic bomb end the war" is a history question and is 7.
 
     For "categories": a JSON array containing zero or more of these exact strings,
     only where they genuinely apply: "violence", "sexual_content", "profanity",

@@ -329,6 +329,11 @@ async function scanSelection(tabId, text) {
   }
 }
 
+// A blocked category only takes effect at or above this rating. Below it the
+// content is tagged with the subject but treated gently enough that blocking it
+// would catch homework and sport. See the note in evaluateForChild().
+const CATEGORY_MATURITY_FLOOR = 13;
+
 function evaluateForChild(result, settings) {
   const childAge = settings.childAge || 18;
   const blockedCategories = (settings.blockedCategories || []).map(c => String(c).trim().toLowerCase());
@@ -356,8 +361,17 @@ function evaluateForChild(result, settings) {
   const categories = (result.categories || []).map(c => String(c).trim().toLowerCase());
   console.log("[Dhvanyartha Guard] category check — page categories:", categories, "| blocked list:", blockedCategories);
 
+  // A category tick means "block this kind of content", not "block every mention
+  // of the subject". The model tags subject matter, so "boxing highlights 2024"
+  // and "world war 2 battle history" both come back tagged violence - and a parent
+  // who ticked violence plainly did not mean to block sport and history homework.
+  // Measured: both were blocked outright before this check existed.
+  //
+  // So a category only blocks when the content is ALSO rated mature. The category
+  // says what the subject is; min_age says how strong the treatment is. Requiring
+  // both is what the tick actually meant.
   const hit = categories.find(c => blockedCategories.includes(c));
-  if (hit) {
+  if (hit && (result.min_age || 0) >= CATEGORY_MATURITY_FLOOR) {
     return { blocked: true, reason: `Contains ${hit.replace(/_/g, " ")}`, selfHarmSignal };
   }
 

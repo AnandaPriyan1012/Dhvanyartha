@@ -186,6 +186,30 @@ const STYLES = `
     to   { transform: translateX(390%); }
   }
 
+  /* ---------- curtain ---------- */
+
+  .curtain {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483645;
+    background: var(--void);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .curtain .pip {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--ember);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
   /* ---------- block overlay ---------- */
 
   .overlay {
@@ -555,13 +579,69 @@ function showBlockOverlay(reason, meta) {
   back.focus();
 }
 
+/* ---------- curtain over search results while the query is judged ---------- */
+
+// Results render in a few hundred milliseconds; the verdict takes about a second.
+// Without this, the child sees the results for that gap - which is precisely the
+// window that matters for the searches worth blocking at all. So search pages are
+// held behind a curtain until the verdict lands.
+//
+// Only search pages, and only briefly: veiling every page would make the whole
+// browser feel broken, and the timeout below guarantees a page can never stay
+// hidden if the backend is slow or down.
+const CURTAIN_MAX_MS = 2500;
+
+const SEARCH_HOSTS = [
+  [/(^|\.)google\.[a-z.]+$/i, "q"],
+  [/(^|\.)bing\.com$/i, "q"],
+  [/(^|\.)duckduckgo\.com$/i, "q"],
+  [/(^|\.)ecosia\.org$/i, "q"],
+  [/(^|\.)search\.brave\.com$/i, "q"],
+  [/(^|\.)search\.yahoo\.[a-z.]+$/i, "p"],
+  [/(^|\.)youtube\.com$/i, "search_query"],
+];
+
+let curtainTimer = null;
+
+function isSearchPage() {
+  try {
+    const u = new URL(location.href);
+    return SEARCH_HOSTS.some(([host, param]) => host.test(u.hostname) && (u.searchParams.get(param) || "").trim());
+  } catch {
+    return false;
+  }
+}
+
+function raiseCurtain() {
+  const root = getShadow();
+  if (root.querySelector(".curtain")) return;
+  const curtain = el("div", "curtain");
+  curtain.appendChild(el("span", "pip"));
+  curtain.appendChild(el("span", null, "Checking this search"));
+  root.appendChild(curtain);
+  curtainTimer = setTimeout(dropCurtain, CURTAIN_MAX_MS);
+}
+
+function dropCurtain() {
+  clearTimeout(curtainTimer);
+  const root = getShadow();
+  const curtain = root.querySelector(".curtain");
+  if (curtain) curtain.remove();
+}
+
+if (isSearchPage()) raiseCurtain();
+
 /* ---------- messages from background.js ---------- */
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "block") {
+    // The block overlay replaces the curtain, so the results underneath are never
+    // shown even for a frame.
+    dropCurtain();
     showBlockOverlay(message.reason, message.meta);
     setState("block", "Blocked", message.reason || "");
   } else if (message.action === "scanResult") {
+    dropCurtain();
     showVerdict(message.decision || {}, message.result || {}, message.auto);
   } else if (message.action === "scanStarted") {
     setState("scanning", "Checking", "");
