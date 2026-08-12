@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Dhvanyartha Guard",
+  "version": "1.0.0",
+  "description": "Scans what's on screen and blocks content outside the set age range.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Dhvanyartha Guard"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}
