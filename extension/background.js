@@ -42,29 +42,51 @@ function normalizeUrl(url) {
 
 /* ---------- live settings from the backend (source of truth is the web app's Dashboard) ---------- */
 
-async function getEffectiveSettings() {
-  const local = await chrome.storage.local.get(["childAge", "blockedCategories", "guardEnabled", "parentEmail"]);
+// Settings are re-fetched at most this often. Every scan used to make its own
+// round trip to the backend before it could even start, which added latency to
+// every single page load for data that changes maybe twice a month.
+const SETTINGS_TTL_MS = 30_000;
+let settingsCache = { value: null, fetchedAt: 0 };
+
+function invalidateSettingsCache() {
+  settingsCache = { value: null, fetchedAt: 0 };
+}
+
+async function getEffectiveSettings(force = false) {
+  const fresh = Date.now() - settingsCache.fetchedAt < SETTINGS_TTL_MS;
+  if (!force && fresh && settingsCache.value) return settingsCache.value;
+
+  const local = await chrome.storage.local.get(["parentEmail"]);
 
   if (!local.parentEmail) {
-    // Not linked to a parent account yet — fall back to whatever's stored locally
-    // (usually just guardEnabled; age/categories will be defaults until linked).
-    console.log("[Dhvanyartha Guard] no parent linked yet, using local fallback settings");
-    return local;
+    // No parent linked yet. Protection stays ON: this is a child-safety tool, so
+    // an unconfigured state must fail safe rather than fail open.
+    console.log("[Dhvanyartha Guard] no parent linked yet, using safe defaults");
+    const fallback = { childAge: 18, blockedCategories: [], guardEnabled: true, parentEmail: null };
+    settingsCache = { value: fallback, fetchedAt: Date.now() };
+    return fallback;
   }
 
   try {
     const res = await fetch(`${API_BASE}/settings?user_email=${encodeURIComponent(local.parentEmail)}`);
     const remote = await res.json();
-    console.log("[Dhvanyartha Guard] fetched live settings from backend:", remote);
-    return {
+    const value = {
       childAge: remote.child_age,
       blockedCategories: remote.blocked_categories || [],
-      guardEnabled: remote.guard_enabled !== false && local.guardEnabled !== false,
+      // Deliberately NOT combined with any local flag. Protection is the parent's
+      // decision, made in the dashboard; nothing on the child's device may
+      // override it. See the note in the popup.
+      guardEnabled: remote.guard_enabled !== false,
       parentEmail: local.parentEmail
     };
+    settingsCache = { value, fetchedAt: Date.now() };
+    return value;
   } catch (err) {
-    console.error("[Dhvanyartha Guard] failed to fetch live settings, using local fallback:", err.message);
-    return local;
+    console.error("[Dhvanyartha Guard] could not reach the backend for settings:", err.message);
+    // Never fall open on a network error. Keep the last known settings, or the
+    // strictest sensible defaults if we have never had any.
+    const value = settingsCache.value || { childAge: 18, blockedCategories: [], guardEnabled: true, parentEmail: local.parentEmail };
+    return value;
   }
 }
 
@@ -94,25 +116,114 @@ async function shrinkImage(blob, maxWidth = 800) {
 
 /* ---------- page load hook ---------- */
 
+/* ---------- search queries: the fastest and most useful block ---------- */
+
+// Where the search term lives in each engine's URL.
+const SEARCH_ENGINES = [
+  { host: /(^|\.)google\.[a-z.]+$/i, param: "q" },
+  { host: /(^|\.)bing\.com$/i, param: "q" },
+  { host: /(^|\.)duckduckgo\.com$/i, param: "q" },
+  { host: /(^|\.)ecosia\.org$/i, param: "q" },
+  { host: /(^|\.)search\.brave\.com$/i, param: "q" },
+  { host: /(^|\.)search\.yahoo\.[a-z.]+$/i, param: "p" },
+  { host: /(^|\.)youtube\.com$/i, param: "search_query" },
+];
+
+function extractSearchQuery(url) {
+  try {
+    const u = new URL(url);
+    for (const engine of SEARCH_ENGINES) {
+      if (engine.host.test(u.hostname)) {
+        const q = (u.searchParams.get(engine.param) || "").trim();
+        if (q) return q;
+      }
+    }
+  } catch {
+    // not a parseable URL
+  }
+  return null;
+}
+
+const lastQueryScanned = {}; // tabId -> query, so re-fires of the same URL cost nothing
+
+async function scanSearchQuery(tabId, query, url) {
+  try {
+    if (lastQueryScanned[tabId] === query) return;
+    lastQueryScanned[tabId] = query;
+
+    const settings = await getEffectiveSettings();
+    if (settings.guardEnabled === false) return;
+
+    console.log("[Dhvanyartha Guard] judging search query:", query);
+    chrome.tabs.sendMessage(tabId, { action: "scanStarted" }).catch(() => {});
+
+    const res = await fetch(`${API_BASE}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: query, user_email: settings.parentEmail || null })
+    });
+    const result = await res.json();
+
+    const decision = evaluateForChild(result, settings);
+    console.log("[Dhvanyartha Guard] search decision:", decision);
+
+    if (decision.blocked) {
+      sendBlockMessage(tabId, decision.reason, blockMeta(result, settings, query));
+      rememberBlocked(url, decision.reason);
+    }
+
+    chrome.tabs.sendMessage(tabId, { action: "scanResult", result, decision, auto: true }).catch(() => {});
+    logScan({ ...result, description: `Search: ${query}` }, decision);
+  } catch (err) {
+    console.error("[Dhvanyartha Guard] search scan failed:", err);
+  }
+}
+
+/* ---------- page load hook ---------- */
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // A search term is judged the instant the URL appears - long before the page
+  // renders. Analyzing the query as text takes a fraction of the time a
+  // screenshot plus vision call does, so this is the fastest block available and
+  // it catches intent rather than waiting to see what the results looked like.
+  if (changeInfo.url) {
+    const query = extractSearchQuery(changeInfo.url);
+    if (query) scanSearchQuery(tabId, query, changeInfo.url);
+  }
+
   if (changeInfo.status === "complete" && tab.active && tab.url && tab.url.startsWith("http")) {
-    console.log("[Dhvanyartha Guard] page loaded, scheduling auto-scans:", tab.url);
-    // Two passes: an early one for fast pages, and a later one to catch
-    // content that finishes rendering after the initial page load event fires
-    // (search results, infinite-scroll feeds, ads, etc).
-    setTimeout(() => scanTab(tabId, false), 700);
-    setTimeout(() => scanTab(tabId, false, true), 2800);
+    console.log("[Dhvanyartha Guard] page loaded, scheduling auto-scan:", tab.url);
+    // One early screenshot pass, plus a later one only for pages that keep
+    // rendering after load (feeds, results, ads). The late pass used to run
+    // unconditionally, doubling the vision cost and latency of every page.
+    setTimeout(() => scanTab(tabId, false), 600);
+    setTimeout(() => {
+      if (!blockedUrls[normalizeUrl(tab.url)]) scanTab(tabId, false, true);
+    }, 2600);
   }
 });
 
-async function sendBlockMessage(tabId, reason, attempt = 1) {
+// Structured detail for the block screen, so it can show the age rating as a
+// rating rather than restating a sentence the child has to parse.
+function blockMeta(result, settings, query) {
+  return {
+    minAge: result.min_age || null,
+    childAge: settings.childAge || null,
+    category: (result.categories || [])
+      .map(c => String(c).trim().toLowerCase())
+      .find(c => (settings.blockedCategories || []).map(x => String(x).trim().toLowerCase()).includes(c)) || null,
+    query: query || null
+  };
+}
+
+async function sendBlockMessage(tabId, reason, meta, attempt = 1) {
   try {
-    await chrome.tabs.sendMessage(tabId, { action: "block", reason });
+    await chrome.tabs.sendMessage(tabId, { action: "block", reason, meta });
     console.log("[Dhvanyartha Guard] block message delivered to tab", tabId);
   } catch (err) {
     console.error(`[Dhvanyartha Guard] block message failed (attempt ${attempt}):`, err.message);
     if (attempt < 3) {
-      setTimeout(() => sendBlockMessage(tabId, reason, attempt + 1), 600);
+      setTimeout(() => sendBlockMessage(tabId, reason, meta, attempt + 1), 600);
     } else {
       console.error("[Dhvanyartha Guard] giving up on blocking this tab after 3 attempts");
     }
@@ -125,6 +236,7 @@ const lastScanAt = {}; // tabId -> timestamp, prevents redundant back-to-back sc
 // the service worker.
 chrome.tabs.onRemoved.addListener((tabId) => {
   delete lastScanAt[tabId];
+  delete lastQueryScanned[tabId];
 });
 
 async function scanTab(tabId, isManual, bypassDedup = false) {
@@ -180,7 +292,7 @@ async function scanTab(tabId, isManual, bypassDedup = false) {
     console.log("[Dhvanyartha Guard] decision:", decision);
 
     if (decision.blocked) {
-      sendBlockMessage(tabId, decision.reason);
+      sendBlockMessage(tabId, decision.reason, blockMeta(result, settings, null));
       if (tab && tab.url) rememberBlocked(tab.url, decision.reason);
     }
 
@@ -221,6 +333,21 @@ function evaluateForChild(result, settings) {
   const childAge = settings.childAge || 18;
   const blockedCategories = (settings.blockedCategories || []).map(c => String(c).trim().toLowerCase());
   const selfHarmSignal = !!result.self_harm_signal;
+
+  // Checked before every other rule, and it always resolves to "not blocked".
+  //
+  // A child searching "i want to kill myself" gets min_age 18 and a block verdict
+  // from the model, so every rule below would wall them off. The page they are
+  // being walled off from is the one showing crisis helplines. Blocking here
+  // would cut a child off from help at the exact moment they reached for it, and
+  // would teach them that asking gets them caught.
+  //
+  // So the signal never blocks. It goes to the parent's dashboard as something to
+  // follow up on in person, which is the only thing that actually helps.
+  if (selfHarmSignal) {
+    console.log("[Dhvanyartha Guard] self-harm signal - deliberately NOT blocking, surfacing to parent");
+    return { blocked: false, reason: null, selfHarmSignal: true };
+  }
 
   if (result.min_age && childAge < result.min_age) {
     return { blocked: true, reason: `Rated for age ${result.min_age}+, child is ${childAge}`, selfHarmSignal };

@@ -1,21 +1,40 @@
 // popup.js
 
-const guardToggle = document.getElementById("guardToggle");
+const guardStatus = document.getElementById("guardStatus");
+const guardDot = document.getElementById("guardDot");
 const toolbarToggle = document.getElementById("toolbarToggle");
 const scanBtn = document.getElementById("scanBtn");
 const clearBlockedBtn = document.getElementById("clearBlockedBtn");
 const scanStatus = document.getElementById("scanStatus");
 const dashboardLink = document.getElementById("dashboardLink");
 
-// Load current guard state (defaults to ON if never set)
-chrome.storage.local.get(["guardEnabled", "toolbarHidden"], (data) => {
-  guardToggle.checked = data.guardEnabled !== false;
+chrome.storage.local.get(["toolbarHidden"], (data) => {
   toolbarToggle.checked = !data.toolbarHidden;
 });
 
-guardToggle.addEventListener("change", () => {
-  chrome.storage.local.set({ guardEnabled: guardToggle.checked });
-});
+// Protection state is read from the parent's saved settings and only displayed.
+// There is no control to change it here on purpose - see README.
+async function showGuardState() {
+  try {
+    const { parentEmail } = await chrome.storage.local.get(["parentEmail"]);
+    if (!parentEmail) {
+      guardStatus.textContent = "Protection on";
+      guardDot.className = "status-dot on";
+      document.querySelector(".status-note").textContent = "Sign in on the dashboard to link this device";
+      return;
+    }
+    const res = await fetch(`http://localhost:8000/settings?user_email=${encodeURIComponent(parentEmail)}`);
+    const settings = await res.json();
+    const on = settings.guard_enabled !== false;
+    guardStatus.textContent = on ? "Protection on" : "Protection off";
+    guardDot.className = `status-dot ${on ? "on" : "off"}`;
+  } catch (err) {
+    guardStatus.textContent = "Can't reach the backend";
+    guardDot.className = "status-dot off";
+    document.querySelector(".status-note").textContent = "Start the backend to see live status";
+  }
+}
+showGuardState();
 
 toolbarToggle.addEventListener("change", () => {
   chrome.storage.local.set({ toolbarHidden: !toolbarToggle.checked });

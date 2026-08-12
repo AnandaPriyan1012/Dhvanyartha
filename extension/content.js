@@ -201,41 +201,76 @@ const STYLES = `
   }
 
   .card {
-    background: var(--shell);
-    border: 1px solid var(--seam);
-    border-radius: 18px;
-    padding: 40px 44px;
-    max-width: 400px;
-    text-align: center;
+    max-width: 430px;
+    width: 100%;
     color: var(--ink);
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+    text-align: left;
   }
-  .card .mark {
-    width: 3px;
-    height: 34px;
-    margin: 0 auto 22px;
-    border-radius: 2px;
-    background: var(--halt);
+
+  /* The rating is the hero. A child stopped mid-click should understand the
+     judgement at a glance, in the visual language of a content certificate,
+     without reading a sentence and decoding it. */
+  .cert {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--halt);
+    line-height: 0.85;
+    margin-bottom: 26px;
   }
+  .cert .num { font-size: 84px; letter-spacing: -0.04em; }
+  .cert .plus { font-size: 34px; }
+
+  .cert-word {
+    font-family: var(--mono);
+    font-size: 40px;
+    font-weight: 600;
+    color: var(--halt);
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    margin-bottom: 26px;
+    text-transform: lowercase;
+  }
+
+  .rule { height: 1px; background: var(--seam); margin-bottom: 22px; }
+
   .card .eyebrow {
     font-family: var(--mono);
     font-size: 9.5px;
-    letter-spacing: 0.18em;
+    letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: var(--halt);
-    margin-bottom: 12px;
+    color: var(--faint);
+    margin-bottom: 14px;
   }
-  .card h1 { font-size: 19px; font-weight: 600; margin-bottom: 12px; }
-  .card p { font-size: 13.5px; line-height: 1.6; color: var(--ash); margin-bottom: 26px; }
+  .card h1 { font-size: 21px; font-weight: 600; margin-bottom: 10px; letter-spacing: -0.01em; }
+  .card p { font-size: 13.5px; line-height: 1.65; color: var(--ash); }
+  .card p + p { margin-top: 8px; }
+
+  .queried {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ash);
+    background: rgba(255, 255, 255, 0.04);
+    border-left: 2px solid var(--seam);
+    padding: 9px 12px;
+    margin-top: 16px;
+    border-radius: 0 6px 6px 0;
+    word-break: break-word;
+  }
+
+  .card .row { display: flex; gap: 10px; align-items: center; margin-top: 28px; }
   .card button {
     background: var(--ember);
     color: #1a1016;
     font-size: 13px;
     font-weight: 600;
-    padding: 10px 22px;
+    padding: 11px 24px;
     border-radius: 10px;
   }
-  .card button:hover { background: var(--ember); filter: brightness(1.1); }
+  .card button:hover { filter: brightness(1.1); }
+  .card .aside { font-size: 12px; color: var(--faint); }
 
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
@@ -458,20 +493,50 @@ function showVerdict(decision, result, isAuto) {
 
 /* ---------- block overlay ---------- */
 
-function showBlockOverlay(reason) {
+function showBlockOverlay(reason, meta) {
   const root = getShadow();
   if (root.querySelector(".overlay")) return;
 
   // Freeze the page underneath so scrolling cannot reveal content past the overlay.
   document.documentElement.style.overflow = "hidden";
 
+  meta = meta || {};
   const overlay = el("div", "overlay");
   const card = el("div", "card");
-  card.appendChild(el("div", "mark"));
-  card.appendChild(el("div", "eyebrow", "Dhvanyartha Guard"));
-  card.appendChild(el("h1", null, "This page is blocked"));
-  card.appendChild(el("p", null, reason || "This content isn't appropriate for the age set on this device."));
 
+  // Lead with the judgement itself, in the language of a content rating.
+  if (meta.minAge) {
+    const cert = el("div", "cert");
+    cert.appendChild(el("span", "num", String(meta.minAge)));
+    cert.appendChild(el("span", "plus", "+"));
+    card.appendChild(cert);
+  } else if (meta.category) {
+    card.appendChild(el("div", "cert-word", meta.category.replace(/_/g, " ")));
+  } else {
+    card.appendChild(el("div", "cert-word", "blocked"));
+  }
+
+  card.appendChild(el("div", "rule"));
+  card.appendChild(el("div", "eyebrow", meta.query ? "Search stopped" : "Page stopped"));
+
+  if (meta.minAge && meta.childAge) {
+    card.appendChild(el("h1", null, `Meant for ages ${meta.minAge} and up`));
+    card.appendChild(el("p", null, `This device is set up for age ${meta.childAge}.`));
+  } else if (meta.category) {
+    card.appendChild(el("h1", null, `This is about ${meta.category.replace(/_/g, " ")}`));
+    card.appendChild(el("p", null, "A parent chose to block this topic on this device."));
+  } else {
+    card.appendChild(el("h1", null, "This page is blocked"));
+    card.appendChild(el("p", null, reason || "This content isn't right for the age set on this device."));
+  }
+
+  if (meta.query) {
+    card.appendChild(el("div", "queried", meta.query));
+  }
+
+  card.appendChild(el("p", null, "If you think this is wrong, ask whoever set up this device."));
+
+  const row = el("div", "row");
   const back = el("button", null, "Go back");
   back.addEventListener("click", () => {
     // A page opened in a fresh tab has nothing to go back to, so history.back()
@@ -482,17 +547,19 @@ function showBlockOverlay(reason) {
       window.location.replace("about:blank");
     }
   });
-  card.appendChild(back);
+  row.appendChild(back);
+  card.appendChild(row);
 
   overlay.appendChild(card);
   root.appendChild(overlay);
+  back.focus();
 }
 
 /* ---------- messages from background.js ---------- */
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "block") {
-    showBlockOverlay(message.reason);
+    showBlockOverlay(message.reason, message.meta);
     setState("block", "Blocked", message.reason || "");
   } else if (message.action === "scanResult") {
     showVerdict(message.decision || {}, message.result || {}, message.auto);

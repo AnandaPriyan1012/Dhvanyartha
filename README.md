@@ -18,6 +18,22 @@ Off-the-shelf content filters fail Indian families in specific, repeatable ways:
 
 Dhvanyartha sends content to Gemini with prompts built specifically around those failure modes, and asks for a structured judgement rather than a score.
 
+### How blocking actually happens
+
+Two paths, deliberately different in speed:
+
+1. **Search queries are judged from the URL**, the moment navigation starts — before
+   any results render. Analysing the typed text takes about a second, against
+   several for a screenshot plus a vision call, so this is both the fastest block
+   available and the more useful one: it catches what the child was *trying to
+   reach*, not what the results page happened to look like.
+2. **Everything else is screenshotted** after load and judged by vision, which
+   returns an age rating and content categories.
+
+Both verdicts run through the same rules: block if the child's configured age is
+below the returned `min_age`, or if a returned category is on the parent's
+blocklist.
+
 ### One design decision worth calling out
 
 The system detects a `self_harm_signal` separately from its block/allow decision, and **a self-harm signal never blocks the page.**
@@ -201,6 +217,31 @@ python -m unittest discover tests -v
 | `POST` | `/chat-file` | Routes an uploaded file to the right analyzer by MIME type |
 
 ---
+
+## Who can turn protection off
+
+Protection is controlled **only** from the parent dashboard. The extension popup
+shows whether it is on, but has no control to change it, and the extension ignores
+any local setting when deciding — the backend's `guard_enabled` is the only source
+of truth. If the backend cannot be reached, the last known settings are kept and
+protection stays on, so a dropped connection can never quietly disable it.
+
+**What that does not do.** A child who opens `chrome://extensions` can still
+disable or remove the extension, and no extension can prevent that — Chrome
+deliberately gives users that power. The same is true of using a different
+browser, a guest profile, or incognito (where extensions are off by default).
+
+Genuine tamper resistance is a browser-management feature, not something extension
+code can provide. If that is the goal:
+
+- **Chrome Enterprise policy** (`ExtensionInstallForcelist` plus
+  `ExtensionSettings` with `installation_mode: force_installed`) pins the extension
+  so it cannot be removed or disabled, and `IncognitoModeAvailability` closes the
+  incognito route.
+- **Family Link** on a supervised Google account manages this at the account level.
+
+Treat what is here as a household agreement that is hard to bypass by accident,
+not as a lock.
 
 ## Limitations
 

@@ -31,6 +31,27 @@
     margin-bottom: 10px;
     font-size: 13px;
   }
+  /* Protection state is shown, not offered. It is the parent's decision, made in
+     the dashboard, so there is deliberately no control here to switch it off. */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 12px;
+    background: #fff;
+    border: 1px solid #e9e7e2;
+    border-radius: 10px;
+    margin-bottom: 10px;
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #b3b1ac; flex-shrink: 0;
+  }
+  .status-dot.on { background: #2f9e56; }
+  .status-dot.off { background: #c94b3f; }
+  .status-title { font-size: 13px; font-weight: 600; }
+  .status-note { font-size: 11px; color: #86868b; margin-top: 1px; }
+
   .switch { position: relative; width: 36px; height: 20px; }
   .switch input { opacity: 0; width: 0; height: 0; }
   .slider {
@@ -89,12 +110,12 @@
 <div class="wrap">
   <h1><span class="dot"></span>Dhvanyartha Guard</h1>
 
-  <div class="toggle-row">
-    <span>Protection active</span>
-    <label class="switch">
-      <input type="checkbox" id="guardToggle">
-      <span class="slider"></span>
-    </label>
+  <div class="status-row" id="guardStatusRow">
+    <span class="status-dot" id="guardDot"></span>
+    <div>
+      <div class="status-title" id="guardStatus">Checking...</div>
+      <div class="status-note">Set by the parent dashboard</div>
+    </div>
   </div>
 
   <div class="toggle-row">

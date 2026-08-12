@@ -26,6 +26,14 @@ PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 # would rather have byte-stable behaviour than automatic upgrades.
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
+# Text scans - above all the search queries the extension judges before a results
+# page renders - sit directly in front of a page load, so latency is felt. Measured
+# on this project's own queries: flash-lite averaged 0.9s against 4-7s for full
+# flash, and returned the same verdict on every case tested. Vision keeps the
+# stronger model, where the judgement is genuinely harder.
+FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-flash-lite-latest")
+
+
 class MissingCredentialsError(RuntimeError):
     """Raised when neither a Gemini API key nor a GCP project is configured."""
 
@@ -109,8 +117,23 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
         "moderation_decision": "allow/flag/block",
         "reason": "one line explanation of decision",
         "confidence": 0.0,
+        "min_age": 0,
+        "categories": [],
         "self_harm_signal": false
     }}
+
+    This text may be a SEARCH QUERY a child has just typed. Judge what the person is
+    trying to reach, not only the words themselves: "how to make a bomb" is harmful
+    intent even though it is a mild-looking phrase.
+
+    For "min_age": the recommended minimum age of someone who should see this
+    content or make this search, as one of 0, 7, 13, 16 or 18 (0 = fine for all ages).
+
+    For "categories": a JSON array containing zero or more of these exact strings,
+    only where they genuinely apply: "violence", "sexual_content", "profanity",
+    "gambling", "drugs_alcohol", "disturbing_imagery", "hate_speech". Return [] if
+    none apply. A category applies when the SUBJECT MATTER is that topic, even if
+    the wording is clinical or factual.
 
     For "self_harm_signal": set this to true if the text shows ANY sign that the writer may
     be experiencing a self-harm, suicide, or personal mental health crisis — even if the
@@ -126,7 +149,7 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
 
     response = await asyncio.to_thread(
         get_client().models.generate_content,
-        model=MODEL,
+        model=FAST_MODEL,
         contents=[prompt]
     )
 
