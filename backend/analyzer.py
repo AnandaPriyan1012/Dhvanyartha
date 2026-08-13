@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import google.auth
 import httpx
 import ipaddress
@@ -37,6 +38,169 @@ MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 # flash, and returned the same verdict on every case tested. Vision keeps the
 # stronger model, where the judgement is genuinely harder.
 FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-flash-lite-latest")
+
+# Groq is supported as a second provider with a separate free-tier quota pool.
+# When one provider is used up for the day the other takes over, so scanning keeps
+# working rather than silently stopping - which is what actually happens to a
+# child-safety tool that quietly runs out of quota.
+#
+# qwen3.6-27b is the only model on Groq that accepts images, and it was verified
+# to genuinely read them (it transcribed a random string it could not have
+# guessed). Groq has no audio or video model here, so those stay on Gemini.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+
+# Which provider to try first: "gemini" (default) or "groq".
+PROVIDER = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+
+GEMINI_CONFIGURED = bool(
+    os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GCP_PROJECT_ID")
+)
+
+
+# Every category the model may tag. Kept in one place so the text and image
+# prompts cannot drift apart, and so the dashboard's checkboxes have a single
+# source of truth.
+CATEGORIES = [
+    "violence",
+    "sexual_content",
+    "profanity",
+    "gambling",
+    "drugs_alcohol",
+    "disturbing_imagery",
+    "hate_speech",
+    "self_harm",
+    "eating_disorder",
+    "weapons",
+    "extremism",
+    "predatory_contact",
+    "dangerous_challenges",
+    "cyberbullying",
+    "scams",
+]
+
+# Shared rubric appended to both the text and the image prompt. Written once
+# because a category that is judged differently for a screenshot than for the
+# search that led to it produces contradictory verdicts on the same content.
+RUBRIC = """
+    For "categories": a JSON array containing zero or more of these exact strings,
+    only where they genuinely apply. Return [] if none do.
+      "violence"             fighting, killing, physical harm
+      "sexual_content"       sexual or pornographic material
+      "profanity"            strong or crude language
+      "gambling"             betting, casinos, loot boxes, real-money wagering
+      "drugs_alcohol"        recreational drugs, alcohol, vaping, buying either
+      "disturbing_imagery"   gore, injury, death, body horror, deeply upsetting scenes
+      "hate_speech"          abuse or dehumanisation of a group
+      "self_harm"            suicide or self-injury METHODS, encouragement, or
+                             communities promoting it
+      "eating_disorder"      pro-anorexia or pro-bulimia material, starvation or
+                             purging advice, weight-loss content aimed at minors
+      "weapons"             making, buying or acquiring guns, knives or explosives
+      "extremism"            terrorist, violent-extremist or radicalising material
+      "predatory_contact"    adults soliciting minors, grooming, requests to move to
+                             private chat, requests for photos or personal details
+      "dangerous_challenges" viral stunts or challenges that injure participants
+                             (choking, poisoning, burning, blackout games)
+      "cyberbullying"        targeted harassment, doxxing, pile-ons, humiliation
+      "scams"                phishing, fraud, fake giveaways, account or crypto theft
+
+    Tag on SUBJECT MATTER, not only on graphic depiction. A shop selling knives is
+    "weapons" even with no violence shown.
+
+    For "educational": true when the treatment is genuinely educational, historical,
+    journalistic, medical, scientific or sporting - a lesson, an encyclopedia entry,
+    a news report, a documentary, a refereed sport. False for entertainment that
+    simply features the topic, and false for anything instructional in how to DO
+    harm. A history of WWII is educational; a video of a real killing is not; "how
+    to make a bomb" is not, however factually it is phrased.
+
+    For "self_harm_signal": true if there is ANY sign that the person may be at
+    risk of self-harm or suicide, or in a mental-health crisis - including when the
+    words are calm, or are asking for help.
+
+    For "self_harm_kind", exactly one of "none", "crisis" or "promotion".
+
+    This single field decides whether a struggling child is helped or shut out, so
+    read these rules carefully and apply them literally.
+
+      "crisis" - the PERSON is expressing their own pain, or reaching for help.
+                 Anything in the first person about their own feelings or
+                 intentions is ALWAYS crisis, however alarming it sounds, and so
+                 is any search for support.
+                 Examples, all "crisis":
+                   "i want to kill myself"
+                   "i want to die"
+                   "i feel so alone and worthless"
+                   "suicide helpline number india"
+                   "how do i stop feeling like this"
+                   "is it normal to think about dying"
+
+      "promotion" - the CONTENT supplies METHODS, encouragement, glamorisation, or
+                 a community pushing people toward self-harm, suicide or
+                 disordered eating. It is about material that would help someone
+                 do harm, not about a person in pain.
+                 Examples, all "promotion":
+                   "painless ways to end my life"
+                   "how to hurt myself without anyone noticing"
+                   "pro ana thinspo tips"
+                   "ways to make someone kill themselves"
+
+    The test: is this a person describing how they FEEL, or content supplying a
+    METHOD? Feelings are crisis. Methods are promotion. When a query could be read
+    either way, choose "crisis" - a child reaching out must never be shut out.
+"""
+
+
+# Someone describing their own pain is a child reaching out, never a page offering
+# a method - and confusing the two is the worst mistake this system can make, in
+# either direction. It is enforced here rather than left to the model because the
+# model demonstrably gets it wrong: Groq's qwen classified "i want to kill myself"
+# as self-harm PROMOTION even with that exact phrase supplied as a worked "crisis"
+# example in its prompt. Acting on that would have walled a child off from the
+# helpline results they were reaching for.
+_FIRST_PERSON = r"(?:\bi\b|\bi'm\b|\bim\b|\bmy\b|\bme\b)"
+_DISTRESS = (
+    r"(?:kill(?:ing)? myself|end(?:ing)? (?:my life|it all|it)|want to die|wanna die|"
+    r"suicidal|hurt myself|harm myself|cut myself|hate myself|worthless|hopeless|"
+    r"want to disappear|so alone|no reason to live|can't go on|cant go on|give up on life)"
+)
+FIRST_PERSON_DISTRESS = re.compile(rf"{_FIRST_PERSON}.{{0,40}}?{_DISTRESS}|{_DISTRESS}.{{0,25}}?{_FIRST_PERSON}", re.I)
+
+# Phrases that are about obtaining a method, even when written in the first person.
+# These stay blocked: "i want to die" is a child in pain, "painless ways to end my
+# life" is a request for instructions.
+_METHOD_SEEKING = re.compile(
+    r"(?:how to|ways? to|methods?|painless|quickest|fastest|easiest|best way|"
+    r"without (?:anyone|being) )"
+    r".{0,30}?(?:kill|die|suicide|hurt myself|harm myself|overdose|hang|"
+    r"end (?:my life|it all|it))"
+    r"|(?:thinspo|pro[- ]?ana|pro[- ]?mia|purge|starv)",
+    re.I,
+)
+
+
+def classify_self_harm(text: str, model_kind: str) -> str:
+    """Decide crisis vs promotion, overriding the model where it is unsafe.
+
+    Returns "none", "crisis" or "promotion". A first-person expression of distress
+    is forced to "crisis" unless it is also plainly asking for a method.
+    """
+    kind = (model_kind or "none").strip().lower()
+    if kind not in ("none", "crisis", "promotion"):
+        kind = "none"
+
+    if not text:
+        return kind
+
+    if _METHOD_SEEKING.search(text):
+        # Asking for a method is promotion regardless of how it is phrased.
+        return "promotion"
+
+    if FIRST_PERSON_DISTRESS.search(text):
+        return "crisis"
+
+    return kind
 
 
 class MissingCredentialsError(RuntimeError):
@@ -88,53 +252,137 @@ def get_client():
     return _client
 
 
-async def _generate_json(model: str, contents: list) -> dict:
-    """Run one Gemini call and parse its JSON reply.
+class QuotaExhausted(ModelError):
+    """The provider refused the call because its quota is used up."""
 
-    Every analyze function used to inline this, and both of the ways it reliably
-    fails in practice surfaced as a bare HTTP 500 with no message: the API
-    refusing the call (quota exhausted, bad key, retired model), and the model
-    replying with something that is not quite JSON. From the extension both look
-    identical to the feature simply being broken, which is exactly how an
-    exhausted free-tier quota went unnoticed. Translate them into something a
-    person can act on.
+
+def _parse_json_reply(raw: str) -> dict:
+    """Pull a JSON object out of a model reply.
+
+    Reasoning models (Groq's qwen among them) narrate inside <think> blocks before
+    answering, and most models like to wrap JSON in code fences. Strip both, then
+    fall back to the outermost braces, because a stray closing sentence after the
+    JSON should not fail an otherwise good scan.
     """
+    text = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S)
+    text = text.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+    raise ModelError(f"The model replied with something that is not JSON: {text[:200]}")
+
+
+async def _gemini_json(model: str, prompt: str, media=None) -> dict:
+    contents = [prompt] if media is None else [
+        types.Part.from_bytes(data=media[0], mime_type=media[1]), prompt
+    ]
     try:
         response = await asyncio.to_thread(
-            get_client().models.generate_content,
-            model=model,
-            contents=contents,
+            get_client().models.generate_content, model=model, contents=contents
         )
     except MissingCredentialsError:
         raise
     except Exception as exc:
         text = str(exc)
         if "RESOURCE_EXHAUSTED" in text or "429" in text:
-            raise ModelError(
+            raise QuotaExhausted(
                 f"Gemini quota exhausted for '{model}'. Free-tier keys have daily "
-                "limits, and screenshotting every page uses them quickly. Wait for "
-                "the reset, point GEMINI_MODEL / GEMINI_FAST_MODEL at a model you "
-                "still have quota on, or enable billing on the key."
+                "limits, and screenshotting every page uses them quickly."
             ) from exc
         if "PERMISSION_DENIED" in text or "API key not valid" in text or "401" in text or "403" in text:
-            raise ModelError(
-                "Gemini rejected the API key. Check GEMINI_API_KEY in backend/.env."
-            ) from exc
+            raise ModelError("Gemini rejected the API key. Check GEMINI_API_KEY in backend/.env.") from exc
         if "NOT_FOUND" in text or "404" in text:
             raise ModelError(
-                f"Model '{model}' is not available to this key. Set GEMINI_MODEL in "
-                "backend/.env to one that is."
+                f"Model '{model}' is not available to this key. Set GEMINI_MODEL in backend/.env."
             ) from exc
         raise ModelError(f"Gemini call failed: {text[:300]}") from exc
 
-    raw = (response.text or "").strip()
-    clean = raw.replace("```json", "").replace("```", "").strip()
-    try:
-        return json.loads(clean)
-    except json.JSONDecodeError as exc:
+    return _parse_json_reply(response.text or "")
+
+
+async def _groq_json(prompt: str, media=None) -> dict:
+    """Same request against Groq's OpenAI-compatible endpoint.
+
+    Groq is a second free tier with its own quota pool, which is the whole point:
+    when one provider is used up for the day, scanning keeps working instead of
+    silently stopping. Called over httpx, already a dependency, so this adds none.
+    """
+    content = [{"type": "text", "text": prompt}]
+    if media is not None:
+        b64 = base64.b64encode(media[0]).decode()
+        content.append({"type": "image_url", "image_url": {"url": f"data:{media[1]};base64,{b64}"}})
+
+    async with httpx.AsyncClient(timeout=60) as http:
+        res = await http.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            # qwen3.6 is a reasoning model: it spends tokens in a <think> block
+            # before answering. At 1200 it reliably ran out partway through the
+            # JSON, which surfaced as "the model replied with something that is
+            # not JSON" on perfectly good scans. The verdict itself is ~200 tokens;
+            # the rest is headroom for the thinking.
+            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": content}],
+                  "max_tokens": 4000},
+        )
+
+    if res.status_code == 429:
+        raise QuotaExhausted(f"Groq quota exhausted for '{GROQ_MODEL}'.")
+    if res.status_code in (401, 403):
+        raise ModelError("Groq rejected the API key. Check GROQ_API_KEY in backend/.env.")
+    if res.status_code != 200:
+        raise ModelError(f"Groq call failed ({res.status_code}): {res.text[:200]}")
+
+    return _parse_json_reply(res.json()["choices"][0]["message"]["content"])
+
+
+async def _generate_json(model: str, prompt: str, media=None, allow_groq: bool = True) -> dict:
+    """Run one scan, falling back to the other provider when quota runs out.
+
+    Both of the ways this reliably fails used to surface as a bare HTTP 500 with no
+    message - the provider refusing the call, and the model returning something
+    that is not JSON - and from the extension both look exactly like the feature
+    being broken. That is how an exhausted free tier went unnoticed for a whole
+    session. Now each is named, and a quota failure on one provider simply moves
+    the request to the other.
+
+    allow_groq is False for audio and video: Groq's vision model takes images only,
+    so those must stay on Gemini.
+    """
+    providers = []
+    if PROVIDER == "groq" and GROQ_API_KEY and allow_groq:
+        providers = [("Groq", lambda: _groq_json(prompt, media))]
+        if GEMINI_CONFIGURED:
+            providers.append(("Gemini", lambda: _gemini_json(model, prompt, media)))
+    else:
+        providers = [("Gemini", lambda: _gemini_json(model, prompt, media))]
+        if GROQ_API_KEY and allow_groq:
+            providers.append(("Groq", lambda: _groq_json(prompt, media)))
+
+    last = None
+    for name, call in providers:
+        try:
+            return await call()
+        except QuotaExhausted as exc:
+            print(f"[dhvanyartha] {name} quota exhausted, trying the next provider")
+            last = exc
+        except MissingCredentialsError as exc:
+            last = exc
+
+    if last is not None:
         raise ModelError(
-            f"The model replied with something that is not JSON: {clean[:200]}"
-        ) from exc
+            f"{last} Every configured provider is out of quota. Wait for the daily "
+            "reset, add a GROQ_API_KEY or GEMINI_API_KEY for a second free tier, or "
+            "enable billing."
+        )
+    raise MissingCredentialsError(
+        "No AI provider configured. Set GEMINI_API_KEY or GROQ_API_KEY in backend/.env."
+    )
 
 
 def save_scan(content_type: str, input_summary: str, result: dict, user_email: str = None, source: str = "manual"):
@@ -177,7 +425,9 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
         "confidence": 0.0,
         "min_age": 0,
         "categories": [],
-        "self_harm_signal": false
+        "educational": false,
+        "self_harm_signal": false,
+        "self_harm_kind": "none"
     }}
 
     This text may be a SEARCH QUERY a child has just typed. Judge what the person is
@@ -201,16 +451,7 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
       "how to make a bomb at home" is 18 because of the intent behind it. "why did
       the atomic bomb end the war" is a history question and is 7.
 
-    For "categories": a JSON array containing zero or more of these exact strings,
-    only where they genuinely apply: "violence", "sexual_content", "profanity",
-    "gambling", "drugs_alcohol", "disturbing_imagery", "hate_speech". Return [] if
-    none apply. A category applies when the SUBJECT MATTER is that topic, even if
-    the wording is clinical or factual.
-
-    For "self_harm_signal": set this to true if the text shows ANY sign that the writer may
-    be experiencing a self-harm, suicide, or personal mental health crisis — even if the
-    text itself is measured, seeking help, or not explicitly graphic. Set it to false for
-    everything else, including fictional, historical, or unrelated uses of similar words.
+    {RUBRIC}
 
     Key rules:
     - Understand code-mixed Indian languages (Hinglish, Tanglish etc)
@@ -219,7 +460,12 @@ async def analyze_text(text: str, user_email: str = None, source: str = "manual"
     - Return ONLY JSON, no extra text
     """
 
-    result = await _generate_json(FAST_MODEL, [prompt])
+    result = await _generate_json(FAST_MODEL, prompt)
+
+    # Correct the model where the crisis/promotion call is unsafe to trust.
+    result["self_harm_kind"] = classify_self_harm(text, result.get("self_harm_kind"))
+    if result["self_harm_kind"] != "none":
+        result["self_harm_signal"] = True
 
     save_scan("text", text, result, user_email, source)
 
@@ -243,43 +489,21 @@ async def analyze_image(image_bytes: bytes, mime_type: str, user_email: str = No
         "confidence": 0.0,
         "min_age": 0,
         "categories": [],
-        "self_harm_signal": false
+        "educational": false,
+        "self_harm_signal": false,
+        "self_harm_kind": "none"
     }
 
     For "min_age": give the recommended minimum viewer age as one of 0, 7, 13, 16, or 18,
     based on how mature the content is (0 = suitable for all ages).
 
-    For "categories": return a JSON array containing zero or more of these exact strings,
-    only including ones that genuinely apply: "violence", "sexual_content", "profanity",
-    "gambling", "drugs_alcohol", "disturbing_imagery", "hate_speech". Return an empty
-    array [] if none apply.
-
-    Important: a category applies if the page's SUBJECT MATTER is about that topic, not
-    only when it's graphically depicted. A search result, article, or definition that is
-    primarily ABOUT violence, drugs, gambling, etc. should still be tagged with that
-    category — being factual, educational, or encyclopedic does NOT exempt it. For
-    example, an encyclopedia-style overview of "violence" that defines and categorizes
-    it should be tagged "violence", even with no graphic imagery. Only leave a category
-    out if the topic is genuinely unrelated or mentioned in passing without being the
-    page's actual focus.
-
-    For "self_harm_signal": set this to true if the screen shows ANY sign that the person
-    using the device may be searching for, viewing, or discussing self-harm, suicide, or
-    a personal mental health crisis — this includes searches like "how to kill myself",
-    pages about suicide methods, or self-harm content, EVEN IF the page itself is a safe,
-    protective response (like a search engine showing helpline numbers). This field is
-    about flagging the underlying signal for a parent to know about, separate from whether
-    the page content itself should be blocked. Set it to false for everything else,
-    including the word "kill" used in unrelated contexts (games, movies, history, news).
+    """ + RUBRIC + """
 
     Don't flag humor, satire, or cultural expressions as harmful.
     Return ONLY JSON, no extra text.
     """
 
-    result = await _generate_json(MODEL, [
-            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-            prompt
-        ])
+    result = await _generate_json(MODEL, prompt, media=(image_bytes, mime_type))
 
     save_scan("image", result.get("description", "image scan"), result, user_email, source)
 
@@ -312,10 +536,7 @@ async def analyze_audio(audio_bytes: bytes, mime_type: str, user_email: str = No
     - Return ONLY JSON, no extra text
     """
 
-    result = await _generate_json(MODEL, [
-            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-            prompt
-        ])
+    result = await _generate_json(MODEL, prompt, media=(audio_bytes, mime_type), allow_groq=False)
 
     save_scan("audio", result.get("transcript", "audio scan"), result, user_email, source)
 
@@ -347,10 +568,7 @@ async def analyze_video(video_bytes: bytes, mime_type: str, user_email: str = No
     - Return ONLY JSON, no extra text
     """
 
-    result = await _generate_json(MODEL, [
-            types.Part.from_bytes(data=video_bytes, mime_type=mime_type),
-            prompt
-        ])
+    result = await _generate_json(MODEL, prompt, media=(video_bytes, mime_type), allow_groq=False)
 
     save_scan("video", result.get("description", "video scan"), result, user_email, source)
 
@@ -464,7 +682,7 @@ async def analyze_website(url: str, user_email: str = None, source: str = "manua
     Return ONLY JSON, no extra text.
     """
 
-    result = await _generate_json(MODEL, [prompt])
+    result = await _generate_json(MODEL, prompt)
 
     save_scan("website", url, result, user_email, source)
 

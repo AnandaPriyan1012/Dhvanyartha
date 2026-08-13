@@ -369,6 +369,18 @@
   }
 
   .category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .always-blocked {
+    margin-top: 12px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    background: var(--block-soft);
+    border: 1px solid var(--block-soft);
+  }
+  .always-blocked strong {
+    display: block; font-size: 12px; font-weight: 600; color: var(--block); margin-bottom: 3px;
+  }
+  .always-blocked span { font-size: 11.5px; line-height: 1.5; color: var(--ink-dim); }
   .category-item {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
@@ -670,12 +682,21 @@
             <h2>Block these content types</h2>
             <div class="category-grid" id="categoryGrid">
               <label class="category-item"><input type="checkbox" value="violence"> Violence</label>
-              <label class="category-item"><input type="checkbox" value="sexual_content"> Sexual content</label>
               <label class="category-item"><input type="checkbox" value="profanity"> Profanity</label>
               <label class="category-item"><input type="checkbox" value="gambling"> Gambling</label>
               <label class="category-item"><input type="checkbox" value="drugs_alcohol"> Drugs / alcohol</label>
               <label class="category-item"><input type="checkbox" value="disturbing_imagery"> Disturbing imagery</label>
               <label class="category-item"><input type="checkbox" value="hate_speech"> Hate speech</label>
+              <label class="category-item"><input type="checkbox" value="weapons"> Weapons</label>
+              <label class="category-item"><input type="checkbox" value="cyberbullying"> Bullying / harassment</label>
+              <label class="category-item"><input type="checkbox" value="scams"> Scams / phishing</label>
+            </div>
+
+            <div class="always-blocked">
+              <strong>Always blocked, whatever is ticked above</strong>
+              <span>Sexual content · Grooming and predatory contact · Extremism ·
+              Dangerous viral challenges · Anything encouraging self-harm or
+              disordered eating</span>
             </div>
           </div>
 
@@ -1033,6 +1054,11 @@ async function saveDashboardSettings() {
         guard_enabled: document.getElementById("guardEnabled").checked
       })
     });
+    // Tell the extension to throw away decisions made under the old settings.
+    // Without this it would keep serving cached verdicts judged against the
+    // previous age and category list.
+    window.postMessage({ source: "dhvanyartha-dashboard", action: "settingsChanged" }, "*");
+
     saveMsg.style.color = "var(--allow)";
     saveMsg.textContent = "Saved";
     setTimeout(() => { saveMsg.textContent = ""; }, 2000);

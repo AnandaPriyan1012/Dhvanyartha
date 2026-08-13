@@ -78,11 +78,29 @@ def health():
     Worth having because every other endpoint only fails at the moment it tries to
     analyze something, which makes a setup problem look like a broken feature.
     """
-    try:
-        get_client()
-        return {"status": "ok", "gemini_configured": True, "detail": "ready to scan"}
-    except MissingCredentialsError as exc:
-        return {"status": "ok", "gemini_configured": False, "detail": str(exc)}
+    import analyzer
+
+    providers = []
+    if analyzer.GEMINI_CONFIGURED:
+        providers.append(f"gemini:{analyzer.MODEL}")
+    if analyzer.GROQ_API_KEY:
+        providers.append(f"groq:{analyzer.GROQ_MODEL}")
+
+    if not providers:
+        return {
+            "status": "ok",
+            "gemini_configured": False,
+            "providers": [],
+            "detail": "No AI provider configured. Set GEMINI_API_KEY or GROQ_API_KEY in backend/.env.",
+        }
+
+    return {
+        "status": "ok",
+        "gemini_configured": analyzer.GEMINI_CONFIGURED,
+        "providers": providers,
+        "primary": analyzer.PROVIDER,
+        "detail": f"ready to scan ({len(providers)} provider(s), falls back on quota)",
+    }
 
 
 @app.post("/analyze")

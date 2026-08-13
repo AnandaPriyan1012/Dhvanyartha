@@ -631,9 +631,37 @@ function dropCurtain() {
 
 if (isSearchPage()) raiseCurtain();
 
+/* ---------- reading the page as text ---------- */
+
+// The cheap path. A screenshot costs about 1,760 input tokens and a vision call;
+// the same page as text is roughly 450 and a much faster text call. The content
+// script is already inside the page, so this needs no scraping service and no
+// network request at all - the DOM is right here.
+function extractPageText() {
+  const parts = [document.title || ""];
+
+  const meta = document.querySelector('meta[name="description"]');
+  if (meta && meta.content) parts.push(meta.content);
+
+  const ogTitle = document.querySelector('meta[property="og:title"]');
+  if (ogTitle && ogTitle.content) parts.push(ogTitle.content);
+
+  // innerText rather than textContent: it reflects what is actually visible,
+  // skipping script, style and hidden elements.
+  const body = document.body ? document.body.innerText : "";
+  parts.push(body);
+
+  return parts.join("\n").replace(/\s+/g, " ").trim().slice(0, 3000);
+}
+
 /* ---------- messages from background.js ---------- */
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "getPageText") {
+    sendResponse({ text: extractPageText(), url: location.href });
+    return false;
+  }
+
   if (message.action === "block") {
     // The block overlay replaces the curtain, so the results underneath are never
     // shown even for a frame.
@@ -664,6 +692,16 @@ chrome.runtime.sendMessage({ action: "checkBlocked", url: location.href }, (resp
 // If this page IS the Dhvanyartha dashboard, sync whichever Google account is
 // signed in there into the extension's storage. This is what lets extension scans
 // show up under the right parent in the dashboard.
+// The dashboard posts a message when settings are saved, so cached verdicts made
+// under the old age and category list can be thrown away immediately.
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (data && data.source === "dhvanyartha-dashboard" && data.action === "settingsChanged") {
+    chrome.runtime.sendMessage({ action: "settingsChanged" }).catch(() => {});
+  }
+});
+
 if ((location.hostname === "localhost" || location.hostname === "127.0.0.1") && location.port === "5500") {
   try {
     const savedUser = JSON.parse(localStorage.getItem("dhv_user") || "null");

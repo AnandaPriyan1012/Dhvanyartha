@@ -21,8 +21,83 @@ from analyzer import (  # noqa: E402
     UnsafeURLError,
     _assert_fetchable,
     _extract_text,
+    _parse_json_reply,
+    classify_self_harm,
     route_text_message,
 )
+
+
+class ClassifySelfHarm(unittest.TestCase):
+    """The most safety-critical logic in the project.
+
+    A child describing their own pain must reach the helpline results, and a page
+    supplying a method must not. The model cannot be trusted with the distinction -
+    Groq's qwen classified "i want to kill myself" as PROMOTION even with that
+    exact phrase given as a worked "crisis" example in its prompt - so the rule is
+    enforced in code, and pinned here.
+    """
+
+    def assert_crisis(self, text, model_said="none"):
+        self.assertEqual(classify_self_harm(text, model_said), "crisis",
+                         f"{text!r} must be treated as a child reaching out")
+
+    def assert_promotion(self, text, model_said="none"):
+        self.assertEqual(classify_self_harm(text, model_said), "promotion",
+                         f"{text!r} supplies a method and must be blocked")
+
+    def test_first_person_distress_is_crisis_even_if_the_model_says_promotion(self):
+        # The exact case observed failing against a live model.
+        self.assert_crisis("i want to kill myself", "promotion")
+        self.assert_crisis("i want to die", "promotion")
+        self.assert_crisis("im suicidal", "promotion")
+
+    def test_expressions_of_feeling_are_crisis(self):
+        self.assert_crisis("i feel so alone and worthless")
+        self.assert_crisis("i hate myself")
+        self.assert_crisis("i have no reason to live")
+
+    def test_looking_for_help_is_crisis(self):
+        self.assertEqual(classify_self_harm("suicide helpline number india", "crisis"), "crisis")
+
+    def test_method_seeking_is_promotion_even_if_the_model_says_crisis(self):
+        self.assert_promotion("easiest painless ways to end my life", "crisis")
+        self.assert_promotion("how to hurt myself without anyone noticing", "crisis")
+        self.assert_promotion("quickest way to kill myself", "crisis")
+
+    def test_material_promoting_self_harm_is_promotion(self):
+        self.assert_promotion("pro ana thinspo tips")
+        self.assert_promotion("ways to make someone kill themselves")
+
+    def test_ordinary_text_is_untouched(self):
+        self.assertEqual(classify_self_harm("best pokemon games for switch", "none"), "none")
+        self.assertEqual(classify_self_harm("world war 2 battle history", "none"), "none")
+
+    def test_an_unexpected_model_value_degrades_to_none(self):
+        self.assertEqual(classify_self_harm("homework help", "something-else"), "none")
+
+
+class ParseJsonReply(unittest.TestCase):
+    """Model replies are rarely bare JSON."""
+
+    def test_plain_json(self):
+        self.assertEqual(_parse_json_reply('{"a": 1}'), {"a": 1})
+
+    def test_code_fences_are_stripped(self):
+        self.assertEqual(_parse_json_reply('```json\n{"a": 1}\n```'), {"a": 1})
+
+    def test_reasoning_block_is_stripped(self):
+        # Groq's qwen narrates before answering.
+        self.assertEqual(
+            _parse_json_reply('<think>let me consider this</think>\n{"a": 1}'), {"a": 1}
+        )
+
+    def test_trailing_commentary_after_the_object_is_tolerated(self):
+        self.assertEqual(_parse_json_reply('{"a": 1}\nHope that helps!'), {"a": 1})
+
+    def test_a_reply_with_no_json_raises(self):
+        from analyzer import ModelError
+        with self.assertRaises(ModelError):
+            _parse_json_reply("I cannot help with that.")
 
 
 class RouteTextMessageURLs(unittest.TestCase):

@@ -193,13 +193,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
   if (changeInfo.status === "complete" && tab.active && tab.url && tab.url.startsWith("http")) {
     console.log("[Dhvanyartha Guard] page loaded, scheduling auto-scan:", tab.url);
-    // One early screenshot pass, plus a later one only for pages that keep
-    // rendering after load (feeds, results, ads). The late pass used to run
-    // unconditionally, doubling the vision cost and latency of every page.
-    setTimeout(() => scanTab(tabId, false), 600);
-    setTimeout(() => {
-      if (!blockedUrls[normalizeUrl(tab.url)]) scanTab(tabId, false, true);
-    }, 2600);
+    // A single pass, at 900ms - late enough for the text to have rendered, early
+    // enough to catch the page quickly. There used to be a second unconditional
+    // pass at 2600ms, which doubled the cost of every page in exchange for very
+    // little: the text path already reads the DOM as it stands when it runs, and
+    // a genuinely new page navigation fires this listener again anyway.
+    setTimeout(() => scanTab(tabId, false), 900);
   }
 });
 
@@ -230,6 +229,65 @@ async function sendBlockMessage(tabId, reason, meta, attempt = 1) {
   }
 }
 
+/* ---------- verdict cache: the difference between 300 calls a day and 40 ---------- */
+
+// A page that was judged safe an hour ago is still safe now, and a child revisits
+// the same handful of sites constantly. Without this, every visit to the same
+// YouTube page, every reload, and every scroll-triggered rescan paid for a fresh
+// vision call.
+//
+// Only "allow" verdicts live here. Blocks are kept separately in blockedUrls,
+// which is consulted before any scan runs and never expires on its own.
+const VERDICT_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const VERDICT_CACHE_MAX = 500;
+
+let verdictCache = {};
+const verdictCacheReady = chrome.storage.local.get(["verdictCache"]).then((data) => {
+  verdictCache = { ...(data.verdictCache || {}), ...verdictCache };
+});
+
+// The cache must not outlive the settings it was judged under: raising a child's
+// age or ticking a new category has to re-open every previous decision.
+function settingsFingerprint(settings) {
+  return [
+    settings.childAge || 0,
+    (settings.blockedCategories || []).slice().sort().join(","),
+  ].join("|");
+}
+
+async function getCachedVerdict(url, settings) {
+  await verdictCacheReady;
+  const entry = verdictCache[normalizeUrl(url)];
+  if (!entry) return null;
+  if (Date.now() - entry.at > VERDICT_TTL_MS) return null;
+  if (entry.fp !== settingsFingerprint(settings)) return null;
+  return entry;
+}
+
+async function cacheVerdict(url, settings, result) {
+  await verdictCacheReady;
+
+  const keys = Object.keys(verdictCache);
+  if (keys.length >= VERDICT_CACHE_MAX) {
+    // Drop the oldest quarter rather than growing without bound.
+    keys.sort((a, b) => verdictCache[a].at - verdictCache[b].at)
+      .slice(0, Math.floor(VERDICT_CACHE_MAX / 4))
+      .forEach(k => delete verdictCache[k]);
+  }
+
+  verdictCache[normalizeUrl(url)] = {
+    at: Date.now(),
+    fp: settingsFingerprint(settings),
+    selfHarmSignal: !!result.self_harm_signal,
+  };
+  chrome.storage.local.set({ verdictCache });
+}
+
+function clearVerdictCache() {
+  verdictCache = {};
+  chrome.storage.local.set({ verdictCache: {} });
+}
+
 const lastScanAt = {}; // tabId -> timestamp, prevents redundant back-to-back scans
 
 // Tab ids are never reused, so without this the map grows for the whole life of
@@ -238,6 +296,46 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   delete lastScanAt[tabId];
   delete lastQueryScanned[tabId];
 });
+
+// The dashboard writes settings to the backend, not to extension storage, so the
+// extension has to be told when they change or it would keep serving decisions
+// made under the old age and category list until the 30s settings cache expired
+// and every cached verdict aged out.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.parentEmail) {
+    invalidateSettingsCache();
+    clearVerdictCache();
+  }
+});
+
+// Below this many characters a page is mostly pictures or video, and its text
+// says nothing useful about what is on screen.
+const MIN_TEXT_FOR_VERDICT = 220;
+
+// Sites where the words on the page are a poor guide to what is actually being
+// shown, so a screenshot is worth its cost even when text was available.
+const VISUAL_SITES = /(^|\.)(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|reddit\.com|pinterest\.|imgur\.com|x\.com|twitter\.com)$/i;
+
+function needsVisualCheck(result, url) {
+  try {
+    if (VISUAL_SITES.test(new URL(url).hostname)) return true;
+  } catch {
+    // unparseable URL, fall through
+  }
+  // A text verdict that is close to the line deserves a proper look.
+  if (result && typeof result.confidence === "number" && result.confidence < 0.55) return true;
+  return false;
+}
+
+async function readPageText(tabId) {
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { action: "getPageText" });
+    return res && res.text ? res.text : null;
+  } catch {
+    // No content script on this page (or it is still loading).
+    return null;
+  }
+}
 
 async function scanTab(tabId, isManual, bypassDedup = false) {
   try {
@@ -272,21 +370,51 @@ async function scanTab(tabId, isManual, bypassDedup = false) {
       return;
     }
 
+    // Already judged safe, under these same settings, recently enough.
+    const cached = await getCachedVerdict(tab.url, settings);
+    if (cached && !isManual) {
+      console.log("[Dhvanyartha Guard] cached allow, no model call:", tab.url);
+      return;
+    }
+
     // Let the HUD start its scan animation, so the user can see that something is
     // happening during the second or two the model takes to answer.
     chrome.tabs.sendMessage(tabId, { action: "scanStarted" }).catch(() => {});
 
-    const screenshotUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 55 });
-    const rawBlob = await (await fetch(screenshotUrl)).blob();
-    const blob = await shrinkImage(rawBlob);
+    // Try the page as TEXT first. It costs roughly a quarter of the tokens a
+    // screenshot does, runs on the faster text model, and is enough to judge the
+    // large majority of pages. The screenshot is kept for the cases text cannot
+    // answer: image and video pages, where the words on screen say nothing about
+    // what is actually being shown.
+    let result = null;
+    const pageText = await readPageText(tabId);
 
-    const formData = new FormData();
-    formData.append("file", blob, "screenshot.jpg");
-    if (settings.parentEmail) formData.append("user_email", settings.parentEmail);
+    if (pageText && pageText.length >= MIN_TEXT_FOR_VERDICT) {
+      const res = await fetch(`${API_BASE}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pageText, user_email: settings.parentEmail || null })
+      });
+      if (res.ok) {
+        result = await res.json();
+        console.log("[Dhvanyartha Guard] text scan result:", result);
+      }
+    }
 
-    const res = await fetch(`${API_BASE}/analyze-image`, { method: "POST", body: formData });
-    const result = await res.json();
-    console.log("[Dhvanyartha Guard] scan result:", result);
+    if (!result || needsVisualCheck(result, tab.url)) {
+      console.log("[Dhvanyartha Guard] falling back to a screenshot for", tab.url);
+      const screenshotUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 55 });
+      const rawBlob = await (await fetch(screenshotUrl)).blob();
+      const blob = await shrinkImage(rawBlob);
+
+      const formData = new FormData();
+      formData.append("file", blob, "screenshot.jpg");
+      if (settings.parentEmail) formData.append("user_email", settings.parentEmail);
+
+      const res = await fetch(`${API_BASE}/analyze-image`, { method: "POST", body: formData });
+      result = await res.json();
+      console.log("[Dhvanyartha Guard] screenshot scan result:", result);
+    }
 
     const decision = evaluateForChild(result, settings);
     console.log("[Dhvanyartha Guard] decision:", decision);
@@ -294,6 +422,10 @@ async function scanTab(tabId, isManual, bypassDedup = false) {
     if (decision.blocked) {
       sendBlockMessage(tabId, decision.reason, blockMeta(result, settings, null));
       if (tab && tab.url) rememberBlocked(tab.url, decision.reason);
+    } else if (tab && tab.url) {
+      // Remember the pass so revisits, reloads and scroll-triggered rescans of
+      // this page cost nothing at all.
+      cacheVerdict(tab.url, settings, result);
     }
 
     // Every scan gets a toast — "safe" when allowed, the reason when blocked —
@@ -329,49 +461,75 @@ async function scanSelection(tabId, text) {
   }
 }
 
-// A blocked category only takes effect at or above this rating. Below it the
-// content is tagged with the subject but treated gently enough that blocking it
-// would catch homework and sport. See the note in evaluateForChild().
-const CATEGORY_MATURITY_FLOOR = 13;
-
 function evaluateForChild(result, settings) {
   const childAge = settings.childAge || 18;
   const blockedCategories = (settings.blockedCategories || []).map(c => String(c).trim().toLowerCase());
   const selfHarmSignal = !!result.self_harm_signal;
+  const categories = (result.categories || []).map(c => String(c).trim().toLowerCase());
+  const educational = result.educational === true;
 
-  // Checked before every other rule, and it always resolves to "not blocked".
+  // Self-harm splits in two, and the two need opposite responses.
   //
-  // A child searching "i want to kill myself" gets min_age 18 and a block verdict
-  // from the model, so every rule below would wall them off. The page they are
-  // being walled off from is the one showing crisis helplines. Blocking here
-  // would cut a child off from help at the exact moment they reached for it, and
-  // would teach them that asking gets them caught.
+  // A child typing "i want to kill myself" is in crisis. The page they are being
+  // sent to is the one showing helplines, so blocking it would cut them off from
+  // help at the moment they reached for it, and teach them that asking gets them
+  // caught. That case is never blocked - it goes to the parent instead, urgently.
   //
-  // So the signal never blocks. It goes to the parent's dashboard as something to
-  // follow up on in person, which is the only thing that actually helps.
-  if (selfHarmSignal) {
-    console.log("[Dhvanyartha Guard] self-harm signal - deliberately NOT blocking, surfacing to parent");
+  // Content that supplies methods, encouragement, or a community pushing people
+  // toward self-harm is the opposite: it is the single most dangerous thing this
+  // tool can encounter, and it is blocked regardless of age or category settings.
+  const selfHarmKind = String(result.self_harm_kind || "none").toLowerCase();
+
+  // Crisis is checked FIRST, ahead of the category test below, and that ordering
+  // is load-bearing. The model tags a crisis search with the "self_harm" category
+  // too, so checking categories first blocked the child anyway and threw away the
+  // whole distinction. Measured: "i feel so alone and worthless" was blocked by
+  // the category even after the crisis correction had been applied.
+  if (selfHarmKind === "crisis") {
+    console.log("[Dhvanyartha Guard] self-harm CRISIS - deliberately NOT blocking, alerting the parent");
     return { blocked: false, reason: null, selfHarmSignal: true };
+  }
+
+  if (selfHarmKind === "promotion" || categories.includes("self_harm") || categories.includes("eating_disorder")) {
+    console.log("[Dhvanyartha Guard] self-harm PROMOTION - blocking, and alerting the parent");
+    return {
+      blocked: true,
+      reason: "This page encourages self-harm.",
+      selfHarmSignal: true
+    };
+  }
+
+  if (selfHarmSignal) {
+    console.log("[Dhvanyartha Guard] self-harm signal, kind unclear - not blocking, alerting the parent");
+    return { blocked: false, reason: null, selfHarmSignal: true };
+  }
+
+  // Categories that are never acceptable for a minor, whatever the parent has
+  // ticked and whatever age is configured. These are not matters of taste.
+  const ALWAYS_BLOCK = ["sexual_content", "predatory_contact", "extremism", "dangerous_challenges"];
+  const alwaysHit = categories.find(c => ALWAYS_BLOCK.includes(c));
+  if (alwaysHit) {
+    return { blocked: true, reason: `Contains ${alwaysHit.replace(/_/g, " ")}`, selfHarmSignal };
   }
 
   if (result.min_age && childAge < result.min_age) {
     return { blocked: true, reason: `Rated for age ${result.min_age}+, child is ${childAge}`, selfHarmSignal };
   }
 
-  const categories = (result.categories || []).map(c => String(c).trim().toLowerCase());
-  console.log("[Dhvanyartha Guard] category check — page categories:", categories, "| blocked list:", blockedCategories);
+  console.log("[Dhvanyartha Guard] category check — page categories:", categories,
+    "| blocked list:", blockedCategories, "| educational:", educational);
 
-  // A category tick means "block this kind of content", not "block every mention
-  // of the subject". The model tags subject matter, so "boxing highlights 2024"
-  // and "world war 2 battle history" both come back tagged violence - and a parent
-  // who ticked violence plainly did not mean to block sport and history homework.
-  // Measured: both were blocked outright before this check existed.
+  // A ticked category blocks the subject - unless the treatment is genuinely
+  // educational. The model tags subject matter, so "world war 2 battle history"
+  // and "boxing highlights" both come back tagged violence, and a parent who
+  // ticked violence did not mean to block history homework and sport. Measured:
+  // both were blocked outright before this carve-out existed.
   //
-  // So a category only blocks when the content is ALSO rated mature. The category
-  // says what the subject is; min_age says how strong the treatment is. Requiring
-  // both is what the tick actually meant.
+  // The exemption is narrow on purpose. "educational" is false for entertainment
+  // that merely features the topic, and false for anything that teaches how to DO
+  // harm - so "how to make a bomb" stays blocked however factually it is worded.
   const hit = categories.find(c => blockedCategories.includes(c));
-  if (hit && (result.min_age || 0) >= CATEGORY_MATURITY_FLOOR) {
+  if (hit && !educational) {
     return { blocked: true, reason: `Contains ${hit.replace(/_/g, " ")}`, selfHarmSignal };
   }
 
@@ -437,6 +595,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "clearBlockedUrls") {
     blockedUrls = {};
     chrome.storage.local.set({ blockedUrls: {} });
+    clearVerdictCache();
+    sendResponse({ cleared: true });
+  }
+
+  if (message.action === "settingsChanged") {
+    // A new age or category list re-opens every previous decision.
+    invalidateSettingsCache();
+    clearVerdictCache();
     sendResponse({ cleared: true });
   }
 
