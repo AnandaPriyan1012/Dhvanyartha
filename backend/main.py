@@ -1,8 +1,17 @@
+import os
+import re
 from typing import Optional
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+from analyzer import CATEGORIES
+from security import (
+    BodySizeLimitMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from analyzer import (
     analyze_text,
     analyze_image,
@@ -22,11 +31,29 @@ from analytics import chart_decisions, chart_content_types, chart_timeline, summ
 
 app = FastAPI()
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
+
+# Only the dashboard's own origins may read responses from a browser page.
+# allow_origins=["*"] previously meant any site the child visited could call this
+# API from their browser and read back the family's settings and history.
+#
+# The extension is unaffected: its requests carry a chrome-extension:// origin and
+# are governed by host_permissions in the manifest, not by CORS.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5500,http://127.0.0.1:5500"
+    ).split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -50,25 +77,69 @@ async def unsafe_url_handler(request: Request, exc: UnsafeURLError):
     return JSONResponse(status_code=400, content={"type": "error", "message": str(exc)})
 
 
+# A search query or a page's text. The cap is well above any real page extract
+# (the extension sends at most 3000 chars) and stops a caller pushing an enormous
+# body straight into a model prompt.
+MAX_TEXT = 8000
+
+# Deliberately not pydantic's EmailStr, which needs the email-validator package.
+# This is a hobby project that has to install from requirements.txt without
+# surprises, and the goal here is rejecting junk and 2MB strings, not RFC 5322
+# conformance.
+EMAIL_PATTERN = r"^[^@\s]{1,64}@[^@\s.]{1,63}(\.[^@\s.]{1,63})+$"
+EmailQuery = Query(None, max_length=254, pattern=EMAIL_PATTERN)
+
+
+def _valid_email(value: str) -> str:
+    if not re.match(EMAIL_PATTERN, value or ""):
+        raise ValueError("must be a valid email address")
+    return value.strip().lower()
+
+
 class TextInput(BaseModel):
-    text: str
-    user_email: Optional[str] = None
+    model_config = {"extra": "forbid"}
+    text: str = Field(min_length=1, max_length=MAX_TEXT)
+    user_email: Optional[str] = Field(None, max_length=254)
 
 
 class URLInput(BaseModel):
-    url: str
+    model_config = {"extra": "forbid"}
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class ChatMessage(BaseModel):
-    message: str
-    user_email: Optional[str] = None
+    model_config = {"extra": "forbid"}
+    message: str = Field(min_length=1, max_length=MAX_TEXT)
+    user_email: Optional[str] = Field(None, max_length=254)
 
 
 class SettingsInput(BaseModel):
-    user_email: str
-    child_age: int
-    blocked_categories: list[str]
+    """Every field is bounded. Before this, a 2MB string, an age of -999, and
+    arbitrary strings as category names were all accepted and written to the
+    database."""
+    model_config = {"extra": "forbid"}
+
+    user_email: str = Field(max_length=254)
+    child_age: int = Field(ge=1, le=25)
+    blocked_categories: list[str] = Field(default_factory=list, max_length=len(CATEGORIES))
     guard_enabled: bool = True
+
+    @field_validator("user_email")
+    @classmethod
+    def check_email(cls, value: str) -> str:
+        return _valid_email(value)
+
+    @field_validator("blocked_categories")
+    @classmethod
+    def known_categories_only(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        for value in values:
+            slug = str(value).strip().lower()
+            if slug not in CATEGORIES:
+                raise ValueError(f"unknown category '{slug}'")
+            if slug not in cleaned:
+                cleaned.append(slug)
+        return cleaned
 
 
 @app.get("/health")
@@ -141,16 +212,19 @@ async def analyze_website_endpoint(input: URLInput):
 
 @app.get("/history")
 async def history_endpoint(
-    decision: Optional[str] = None,
-    source: Optional[str] = None,
-    limit: int = 20,
-    user_email: Optional[str] = None,
+    decision: Optional[str] = Query(None, pattern="^(allow|flag|block)$"),
+    source: Optional[str] = Query(None, pattern="^(manual|extension)$"),
+    # Was an unbounded int: limit=-1 and limit=999999999 both returned the whole
+    # table. Now clamped, and the free-text filters are constrained to the values
+    # that actually exist rather than passed through to a query.
+    limit: int = Query(20, ge=1, le=200),
+    user_email: Optional[str] = EmailQuery,
 ):
     return get_scan_history(user_email=user_email, filter_decision=decision, filter_source=source, limit=limit)
 
 
 @app.get("/settings")
-async def settings_get_endpoint(user_email: str):
+async def settings_get_endpoint(user_email: str = Query(..., max_length=254, pattern=EMAIL_PATTERN)):
     return get_settings(user_email)
 
 
@@ -166,24 +240,24 @@ async def settings_post_endpoint(input: SettingsInput):
 # — and the dashboard asks for three charts at once. As plain `def`, FastAPI runs
 # them on its worker threadpool instead, keeping the server responsive.
 @app.get("/analytics/summary")
-def analytics_summary(user_email: Optional[str] = None):
+def analytics_summary(user_email: Optional[str] = EmailQuery):
     return summary_stats(user_email)
 
 
 @app.get("/analytics/chart/decisions")
-def analytics_chart_decisions(user_email: Optional[str] = None):
+def analytics_chart_decisions(user_email: Optional[str] = EmailQuery):
     buf = chart_decisions(user_email)
     return StreamingResponse(buf, media_type="image/png")
 
 
 @app.get("/analytics/chart/content-types")
-def analytics_chart_content_types(user_email: Optional[str] = None):
+def analytics_chart_content_types(user_email: Optional[str] = EmailQuery):
     buf = chart_content_types(user_email)
     return StreamingResponse(buf, media_type="image/png")
 
 
 @app.get("/analytics/chart/timeline")
-def analytics_chart_timeline(user_email: Optional[str] = None):
+def analytics_chart_timeline(user_email: Optional[str] = EmailQuery):
     buf = chart_timeline(user_email)
     return StreamingResponse(buf, media_type="image/png")
 
