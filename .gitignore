@@ -8,6 +8,11 @@ venv/
 # Environment / secrets
 .env
 .env.*
+!.env.example
+
+# Exported machine CA bundle - describes this machine's network, and on a managed
+# device can identify the employer. Regenerate with `python backend/export_ca.py`.
+corporate-ca.pem
 *credentials*.json
 *.pem
 

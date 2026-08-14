@@ -1,0 +1,25 @@
+# Pinned to the versions this project is developed against.
+# Install with:  pip install -r requirements.txt
+
+# --- Web framework ---
+fastapi==0.139.2
+uvicorn==0.51.0
+python-multipart==0.0.32      # required by FastAPI to parse file uploads and form fields
+
+# --- Persistence ---
+SQLAlchemy==2.0.51
+
+# --- Analytics charts ---
+pandas==2.3.3
+matplotlib==3.10.9
+
+# --- Gemini, via Vertex AI ---
+google-genai==2.13.0
+google-auth==2.56.2
+
+# --- Website fetching ---
+httpx==0.28.1
+beautifulsoup4==4.15.0
+
+# --- Config ---
+python-dotenv==1.2.2

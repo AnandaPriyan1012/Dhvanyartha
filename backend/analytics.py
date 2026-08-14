@@ -1,8 +1,12 @@
 import io
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")  # no GUI backend needed — we're just rendering to image files
-import matplotlib.pyplot as plt
+
+# Deliberately NOT pyplot. pyplot keeps a process-global registry of figures, which
+# is not thread-safe — and FastAPI runs sync endpoints on a worker threadpool, so
+# two chart requests can render at the same time. Building Figure objects directly
+# is matplotlib's documented approach for web servers and keeps each render
+# completely independent. It also removes the need for plt.close() bookkeeping.
+from matplotlib.figure import Figure
 
 from database import engine
 
@@ -29,7 +33,6 @@ def _empty_chart(ax, message="No scans yet"):
 def _fig_to_png_bytes(fig) -> io.BytesIO:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", transparent=True, dpi=140)
-    plt.close(fig)
     buf.seek(0)
     return buf
 
@@ -37,7 +40,8 @@ def _fig_to_png_bytes(fig) -> io.BytesIO:
 def chart_decisions(user_email: str = None) -> io.BytesIO:
     """Pie chart: how many scans were allowed / flagged / blocked."""
     df = load_scans_df(user_email)
-    fig, ax = plt.subplots(figsize=(4.5, 4.5))
+    fig = Figure(figsize=(4.5, 4.5))
+    ax = fig.subplots()
 
     if df.empty:
         _empty_chart(ax)
@@ -54,7 +58,8 @@ def chart_decisions(user_email: str = None) -> io.BytesIO:
 def chart_content_types(user_email: str = None) -> io.BytesIO:
     """Bar chart: how many scans were text vs image vs audio vs video vs website."""
     df = load_scans_df(user_email)
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig = Figure(figsize=(6, 4))
+    ax = fig.subplots()
 
     if df.empty:
         _empty_chart(ax)
@@ -72,7 +77,8 @@ def chart_content_types(user_email: str = None) -> io.BytesIO:
 def chart_timeline(user_email: str = None) -> io.BytesIO:
     """Line chart: how many scans happened per day, over time."""
     df = load_scans_df(user_email)
-    fig, ax = plt.subplots(figsize=(7, 4))
+    fig = Figure(figsize=(7, 4))
+    ax = fig.subplots()
 
     if df.empty:
         _empty_chart(ax)
@@ -84,7 +90,9 @@ def chart_timeline(user_email: str = None) -> io.BytesIO:
         ax.set_ylabel("Scans")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        plt.xticks(rotation=40, ha="right")
+        for label in ax.get_xticklabels():
+            label.set_rotation(40)
+            label.set_horizontalalignment("right")
 
     return _fig_to_png_bytes(fig)
 
