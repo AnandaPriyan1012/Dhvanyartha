@@ -26,7 +26,7 @@
 
     --rule:     #d3c8b4;   /* pencil rule */
     --rule-2:   #e2dac9;   /* fainter rule */
-    --margin:   #a33a2e;   /* the red margin line of a ruled ledger */
+    --margin:   #2f4a7d;   /* ruled in ink blue, the way a register is */
 
     --ink:      #1d1813;   /* iron-gall near-black, warm */
     --ink-mid:  #5b5145;
@@ -35,7 +35,7 @@
     --allow:    #3d6b48;
     --flag:     #94690f;
     --block:    #a33a2e;
-    --live:     #a33a2e;
+    --live:     #2f4a7d;
 
     --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
     --mono:  'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -52,7 +52,7 @@
 
     --rule:     #322c23;
     --rule-2:   #262119;
-    --margin:   #b5493a;
+    --margin:   #8aa6dc;
 
     --ink:      #ece4d6;
     --ink-mid:  #a99e8b;
@@ -61,7 +61,7 @@
     --allow:    #6aa878;
     --flag:     #d0a13f;
     --block:    #d7614f;
-    --live:     #d7614f;
+    --live:     #8aa6dc;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -161,7 +161,12 @@
 
   /* The ruled page: a red margin line with the content set to its right. */
   .dash-wrap {
-    max-width: 860px; margin: 0 auto; padding: 0 26px 80px;
+    max-width: 860px; margin: 0 auto;
+    /* The indent is on the wrapper, not on each block. It used to be a .ledger
+       class applied per element, which meant any block that missed the class -
+       or any rule using the `padding` shorthand after it - sat on top of the
+       margin line. Both happened. */
+    padding: 0 26px 80px calc(26px + var(--margin-w) + 22px);
     position: relative;
   }
   .dash-wrap::before {
@@ -169,11 +174,11 @@
     left: calc(26px + var(--margin-w)); top: 0; bottom: 0;
     width: 1px; background: var(--margin); opacity: .34;
   }
-  .ledger { padding-left: calc(var(--margin-w) + 20px); }
+  .ledger { padding-left: 0; }  /* indent now comes from .dash-wrap */
 
   /* ---------------- the day's heading ---------------- */
 
-  .daymark { padding: 34px 0 0; }
+  .daymark { padding-top: 34px; }
   .daymark .dateline {
     font-family: var(--serif);
     font-size: clamp(30px, 5vw, 46px);
@@ -448,9 +453,8 @@
     #sidebar { position: fixed; left:0; top:0; bottom:0; z-index:15; margin-left: calc(var(--rail) * -1); background: var(--paper); }
     #sidebar.open { margin-left: 0; }
     #hamburger { display: block; }
-    .dash-wrap { padding: 0 16px 60px; }
+    .dash-wrap { padding: 0 16px 60px calc(16px + 18px + 16px); }
     .dash-wrap::before { left: calc(16px + 18px); }
-    .ledger { padding-left: 34px; }
   }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>

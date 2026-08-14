@@ -25,7 +25,7 @@ const STYLES = `
     --ink:    #ece4d6;
     --ash:    #a99e8b;
     --faint:  #74695a;
-    --ember:  #b5493a;
+    --ember:  #8aa6dc;
     --clear:  #6aa878;
     --watch:  #d0a13f;
     --halt:   #d7614f;
@@ -298,7 +298,7 @@ const STYLES = `
   .card .row { display: flex; gap: 10px; align-items: center; margin-top: 28px; }
   .card button {
     background: var(--ember);
-    color: #1a1016;
+    color: #10151f;
     font-size: 13px;
     font-weight: 600;
     padding: 11px 24px;
