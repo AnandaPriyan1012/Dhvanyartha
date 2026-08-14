@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dhvanyartha</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   /* ==================================================================
@@ -39,9 +39,9 @@
 
     --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
     --mono:  'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-    --sans:  -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --sans:  'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
-    --rail: 62px;
+    --rail: 84px;
     --margin-w: 34px;
   }
 
@@ -74,8 +74,9 @@
     height: 100vh;
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
-    font-size: 14.5px;
-    line-height: 1.5;
+    font-size: 15px;
+    line-height: 1.55;
+    letter-spacing: -.005em;
   }
 
   .eyebrow, .lbl {
@@ -104,15 +105,16 @@
   #sidebar .side-header span.name { display: none; }
 
   .rail-btn {
-    width: 44px; height: 44px;
-    display: flex; align-items: center; justify-content: center;
+    width: 100%; padding: 10px 0 8px;
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
     border: none; background: transparent; cursor: pointer;
-    color: var(--ink-dim); font-size: 15px;
-    border-left: 2px solid transparent; margin-left: -2px;
-    transition: color .12s, border-color .12s;
+    color: var(--ink-dim);
+    font-family: var(--sans); font-size: 10.5px; letter-spacing: .01em;
+    border-left: 2px solid transparent;
+    transition: color .12s, border-color .12s, background .12s;
   }
-  .rail-btn span:not(.glyph) { display: none; }
-  .rail-btn:hover { color: var(--ink); }
+  .rail-btn .glyph { font-size: 15px; line-height: 1; }
+  .rail-btn:hover { color: var(--ink); background: var(--sunk); }
   .rail-btn.active { color: var(--ink); border-left-color: var(--margin); }
   .rail-btn:focus-visible { outline: 1px solid var(--margin); outline-offset: -3px; }
 
@@ -161,7 +163,7 @@
 
   /* The ruled page: a red margin line with the content set to its right. */
   .dash-wrap {
-    max-width: 860px; margin: 0 auto;
+    max-width: 1000px; margin: 0;
     /* The indent is on the wrapper, not on each block. It used to be a .ledger
        class applied per element, which meant any block that missed the class -
        or any rule using the `padding` shorthand after it - sat on top of the
@@ -234,14 +236,14 @@
   .trace-empty { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); padding: 20px 0; }
   .trace-axis {
     display: flex; justify-content: space-between;
-    font-family: var(--mono); font-size: 9.5px; color: var(--ink-dim);
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
     letter-spacing: .1em; padding-top: 7px;
   }
 
   /* ---------------- section heads ---------------- */
 
   .dash-section-title {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: .22em;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em;
     text-transform: uppercase; color: var(--ink-dim);
     margin: 34px 0 14px; display: flex; align-items: center; gap: 14px;
   }
@@ -251,13 +253,13 @@
   /* Cards are gone: a "card" is now just a ruled block on the page. */
   .dash-card { background: transparent; border: none; padding: 0; margin-bottom: 26px; }
   .dash-card h2 {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
     text-transform: uppercase; color: var(--ink-dim); font-weight: 400;
     margin-bottom: 14px;
   }
   .dash-h2-row { display: flex; justify-content: space-between; align-items: baseline; }
   .dash-h2-row button {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase;
     border: none; background: transparent; color: var(--ink-dim);
     cursor: pointer; padding: 0; border-bottom: 1px solid var(--rule);
   }
@@ -294,7 +296,7 @@
   .category-item input { accent-color: var(--margin); width: 14px; height: 14px; }
 
   .always-blocked { margin-top: 18px; padding-left: 13px; border-left: 2px solid var(--block); }
-  .always-blocked strong { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--block); margin-bottom: 5px; }
+  .always-blocked strong { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--block); margin-bottom: 5px; }
   .always-blocked span { font-size: 12.5px; line-height: 1.55; color: var(--ink-mid); }
 
   #saveSettingsBtn {
@@ -323,7 +325,7 @@
 
   /* Verdict as a ruled word in its own column, not a pill. */
   .dash-badge {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
     text-transform: uppercase; padding: 0; background: none; border: none;
     border-bottom: 1px solid currentColor; padding-bottom: 1px;
   }
@@ -356,18 +358,18 @@
   .stat-num.allow { color: var(--allow); }
   .stat-num.flag  { color: var(--flag); }
   .stat-num.block { color: var(--block); }
-  .stat-label { font-family: var(--mono); font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim); margin-top: 10px; }
+  .stat-label { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim); margin-top: 10px; }
   .chart-img { width: 100%; display: block; min-height: 120px; mix-blend-mode: multiply; }
   :root[data-theme="dark"] .chart-img { mix-blend-mode: normal; }
-  .analytics-note { font-family: var(--mono); font-size: 9.5px; color: var(--ink-dim); margin-top: 8px; letter-spacing: .06em; }
+  .analytics-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); margin-top: 8px; letter-spacing: .06em; }
 
   /* ---------------- manual scan ---------------- */
 
   #scanView { flex: 1; flex-direction: column; min-height: 0; }
   #chat { flex: 1; overflow-y: auto; padding: 30px 26px 20px; }
-  .thread { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
+  .thread { max-width: 700px; margin: 0; display: flex; flex-direction: column; gap: 26px; }
 
-  .empty-state { margin: auto; text-align: left; max-width: 440px; padding-top: 14vh; }
+  .empty-state { margin: 0; text-align: left; max-width: 460px; padding-top: 10vh; }
   .empty-state .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); margin-bottom: 20px; }
   .empty-state h2 { font-family: var(--serif); font-size: 30px; font-weight: 400; margin-bottom: 12px; letter-spacing: -.02em; }
   .empty-state p { font-size: 14px; line-height: 1.6; color: var(--ink-mid); }
@@ -379,7 +381,7 @@
     white-space: pre-wrap; word-wrap: break-word; text-align: right;
   }
   .row.bot { font-size: 14.5px; line-height: 1.65; }
-  .row.bot .label { font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 10px; }
+  .row.bot .label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 10px; }
   .row.bot p { margin-bottom: 10px; }
   .row.bot p:last-of-type { margin-bottom: 0; }
   .row.bot .meta-line { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); margin-top: 6px; letter-spacing: .08em; }
@@ -407,7 +409,7 @@
   .history-item .reason { font-size: 12.5px; color: var(--ink-dim); margin-top: 2px; }
 
   #inputBar { flex-shrink: 0; padding: 14px 26px 22px; border-top: 1px solid var(--rule); }
-  .composer { max-width: 680px; margin: 0 auto; display: flex; align-items: center; gap: 10px; background: none; border: none; border-radius: 0; box-shadow: none; padding: 0; }
+  .composer { max-width: 700px; margin: 0; display: flex; align-items: center; gap: 10px; background: none; border: none; border-radius: 0; box-shadow: none; padding: 0; }
   .icon-btn { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-dim); font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .icon-btn:hover { color: var(--margin); }
   #textInput {
@@ -437,7 +439,7 @@
   }
   #settingsPanel h3 { font-family: var(--serif); font-size: 24px; font-weight: 400; margin-bottom: 22px; letter-spacing: -.02em; }
   .setting-row { margin-bottom: 20px; }
-  .setting-row label { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 10px; }
+  .setting-row label { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 10px; }
   .theme-toggle { display: flex; gap: 0; border: 1px solid var(--rule); }
   .theme-toggle button { flex: 1; padding: 9px; border: none; border-right: 1px solid var(--rule); background: transparent; color: var(--ink-mid); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
   .theme-toggle button:last-child { border-right: none; }
@@ -853,7 +855,10 @@ function switchTab(tab) {
   document.getElementById("dashboardView").style.display = tab === "dashboard" ? "block" : "none";
   document.getElementById("analyticsView").style.display = tab === "analytics" ? "block" : "none";
   document.getElementById("scanView").style.display = tab === "scan" ? "flex" : "none";
-  document.getElementById("sidebar").style.display = tab === "scan" ? "flex" : "none";
+  // The rail is the app's navigation now, so it stays put. It used to be the
+  // chat session list, which only mattered on the Manual Scan tab - leaving that
+  // rule in place made the nav vanish on the two screens people actually use.
+  document.getElementById("sidebar").style.display = "flex";
 
   document.getElementById("tabDashboardBtn").classList.toggle("active", tab === "dashboard");
   document.getElementById("tabAnalyticsBtn").classList.toggle("active", tab === "analytics");
