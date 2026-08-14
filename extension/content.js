@@ -77,6 +77,13 @@ const STYLES = `
   .hud[data-verdict="flag"]    .rail { background: var(--watch); }
   .hud[data-verdict="block"]   .rail { background: var(--halt); }
   .hud[data-verdict="scanning"] .rail { background: var(--ember); }
+  /* "Unchecked" must not read as a quiet neutral - a parent has to be able to
+     tell it apart from "checked and fine" at a glance. */
+  .hud[data-verdict="failed"] .rail {
+    background: repeating-linear-gradient(
+      -45deg, var(--watch), var(--watch) 3px, transparent 3px, transparent 6px
+    );
+  }
 
   .body { display: flex; align-items: center; }
 
@@ -101,8 +108,9 @@ const STYLES = `
     white-space: nowrap;
     transition: color 0.25s ease;
   }
-  .hud[data-verdict="block"] .status { color: var(--halt); }
-  .hud[data-verdict="flag"]  .status { color: var(--watch); }
+  .hud[data-verdict="block"]  .status { color: var(--halt); }
+  .hud[data-verdict="flag"]   .status { color: var(--watch); }
+  .hud[data-verdict="failed"] .status { color: var(--watch); }
 
   /* ---------- the reveal ---------- */
 
@@ -673,6 +681,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     showVerdict(message.decision || {}, message.result || {}, message.auto);
   } else if (message.action === "scanStarted") {
     setState("scanning", "Checking", "");
+  } else if (message.action === "scanFailed") {
+    // Deliberately NOT "safe". This page was never actually checked.
+    dropCurtain();
+    setState("failed", "Not checked", message.reason || "Couldn't check this page.");
   }
   return false;
 });

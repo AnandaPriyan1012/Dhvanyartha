@@ -17,6 +17,29 @@ from database import SessionLocal, ScanRecord, ParentSettings
 
 load_dotenv()
 
+
+def _trust_local_certificates():
+    """Trust the machine's own CA bundle if one has been exported next to this file.
+
+    Networks that inspect TLS - most managed corporate and school networks - re-sign
+    HTTPS with their own root CA. Python ships its own certificate bundle and knows
+    nothing about that CA, so every call fails with:
+
+        [SSL: CERTIFICATE_VERIFY_FAILED] self signed certificate in certificate chain
+
+    which surfaces as a 502 on every scan. Run `python export_ca.py` to write
+    corporate-ca.pem from the Windows trust store, and it is picked up from here.
+    Setting the variables rather than passing a context means httpx, the Gemini SDK
+    and anything else all honour it.
+    """
+    bundle = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corporate-ca.pem")
+    if os.path.exists(bundle):
+        os.environ.setdefault("SSL_CERT_FILE", bundle)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
+
+
+_trust_local_certificates()
+
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
 # Which Gemini model to use for image, audio, video and website scans.

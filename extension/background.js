@@ -162,6 +162,19 @@ async function scanSearchQuery(tabId, query, url) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: query, user_email: settings.parentEmail || null })
     });
+
+    // A failed scan is NOT a safe page. Without this check the error body was
+    // handed straight to evaluateForChild(), which found no min_age and no
+    // categories in it and duly returned "not blocked" - so a backend that was
+    // completely unable to reach the model still told the parent SAFE. Observed
+    // live: "how to make a bomb" reported safe while the API was returning 502.
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.error("[Dhvanyartha Guard] search scan FAILED", res.status, detail.slice(0, 200));
+      reportScanFailure(tabId, res.status);
+      return;
+    }
+
     const result = await res.json();
 
     const decision = evaluateForChild(result, settings);
@@ -412,8 +425,22 @@ async function scanTab(tabId, isManual, bypassDedup = false) {
       if (settings.parentEmail) formData.append("user_email", settings.parentEmail);
 
       const res = await fetch(`${API_BASE}/analyze-image`, { method: "POST", body: formData });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        console.error("[Dhvanyartha Guard] screenshot scan FAILED", res.status, detail.slice(0, 200));
+        reportScanFailure(tabId, res.status);
+        return;
+      }
       result = await res.json();
       console.log("[Dhvanyartha Guard] screenshot scan result:", result);
+    }
+
+    // Belt and braces: a reply that carries none of the fields the decision is
+    // made from cannot be treated as a pass.
+    if (!result || (result.min_age === undefined && result.moderation_decision === undefined)) {
+      console.error("[Dhvanyartha Guard] scan returned no usable verdict, not reporting safe");
+      reportScanFailure(tabId, 0);
+      return;
     }
 
     const decision = evaluateForChild(result, settings);
@@ -460,6 +487,21 @@ async function scanSelection(tabId, text) {
     console.error("[Dhvanyartha Guard] selection scan failed:", err);
   }
 }
+
+// A scan that could not complete must never look like a pass. The HUD shows an
+// unmistakable "can't check" state instead of "safe", so a parent can tell the
+// difference between "this page was checked and is fine" and "this page was never
+// checked at all".
+function reportScanFailure(tabId, status) {
+  chrome.tabs.sendMessage(tabId, {
+    action: "scanFailed",
+    status,
+    reason: status === 429
+      ? "Too many scans just now."
+      : "Couldn't check this page."
+  }).catch(() => {});
+}
+
 
 function evaluateForChild(result, settings) {
   const childAge = settings.childAge || 18;
