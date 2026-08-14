@@ -6,16 +6,16 @@
   /* Same tokens as the dashboard's dark theme and the on-page HUD, so all three
      surfaces read as one product. */
   :root {
-    --void:  #121016;
-    --shell: #1b1820;
-    --raised:#232029;
-    --seam:  #322e3b;
-    --ink:   #ece9f2;
-    --ash:   #a49cb4;
-    --faint: #6f677e;
-    --ember: #d9805c;
-    --clear: #4cba75;
-    --halt:  #de6d60;
+    --void:   #14120e;
+    --shell:  #191612;
+    --raised: #221e18;
+    --seam:   #322c23;
+    --ink:    #ece4d6;
+    --ash:    #a99e8b;
+    --faint:  #74695a;
+    --ember:  #b5493a;
+    --clear:  #6aa878;
+    --halt:   #d7614f;
 
     --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -44,7 +44,7 @@
   .status-row {
     display: flex; align-items: center; gap: 11px;
     padding: 13px 14px; background: var(--shell);
-    border: 1px solid var(--seam); border-radius: 12px;
+    border: 1px solid var(--seam); border-radius: 2px;
   }
   .status-dot {
     width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
@@ -58,7 +58,7 @@
   .toggle-row {
     display: flex; align-items: center; justify-content: space-between;
     padding: 11px 14px; background: var(--shell);
-    border: 1px solid var(--seam); border-radius: 12px;
+    border: 1px solid var(--seam); border-radius: 2px;
     font-size: 13px; color: var(--ash);
   }
 
@@ -78,7 +78,7 @@
   input:focus-visible + .slider { outline: 2px solid var(--ember); outline-offset: 2px; }
 
   button {
-    font-family: var(--sans); cursor: pointer; border-radius: 11px;
+    font-family: var(--sans); cursor: pointer; border-radius: 2px;
     transition: filter .15s, border-color .15s, color .15s;
   }
   #scanBtn {

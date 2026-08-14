@@ -16,19 +16,19 @@ const STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   :host {
-    /* Same tokens as the parent dashboard's dark theme, so the extension and the
-       dashboard read as one product rather than two. */
-    --void: #121016;
-    --shell: #1b1820;
-    --raised: #232029;
-    --seam: #322e3b;
-    --ink: #ece9f2;
-    --ash: #a49cb4;
-    --faint: #6f677e;
-    --ember: #d9805c;
-    --clear: #4cba75;
-    --watch: #dba449;
-    --halt: #de6d60;
+    /* The register palette, carried onto the page the child is browsing so the
+       guard and the parent's dashboard read as one product. */
+    --void:   #14120e;
+    --shell:  #191612;
+    --raised: #221e18;
+    --seam:   #322c23;
+    --ink:    #ece4d6;
+    --ash:    #a99e8b;
+    --faint:  #74695a;
+    --ember:  #b5493a;
+    --clear:  #6aa878;
+    --watch:  #d0a13f;
+    --halt:   #d7614f;
 
     --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -47,8 +47,8 @@ const STYLES = `
     backdrop-filter: blur(14px) saturate(1.2);
     -webkit-backdrop-filter: blur(14px) saturate(1.2);
     border: 1px solid var(--seam);
-    border-radius: 11px;
-    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38);
+    border-radius: 2px;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.42);
 
     font-family: var(--sans);
     color: var(--ink);
@@ -155,7 +155,7 @@ const STYLES = `
     color: var(--ash);
     background: transparent;
     border: none;
-    border-radius: 7px;
+    border-radius: 2px;
     padding: 6px 9px;
     cursor: pointer;
     white-space: nowrap;
@@ -291,7 +291,7 @@ const STYLES = `
     border-left: 2px solid var(--seam);
     padding: 9px 12px;
     margin-top: 16px;
-    border-radius: 0 6px 6px 0;
+    border-radius: 0;
     word-break: break-word;
   }
 
@@ -302,7 +302,7 @@ const STYLES = `
     font-size: 13px;
     font-weight: 600;
     padding: 11px 24px;
-    border-radius: 10px;
+    border-radius: 2px;
   }
   .card button:hover { filter: brightness(1.1); }
   .card .aside { font-size: 12px; color: var(--faint); }
