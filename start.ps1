@@ -55,11 +55,30 @@ if (-not (Test-Path $envFile)) {
 }
 
 # --- 4. start both servers --------------------------------------------------
-Write-Host "  Starting backend on http://localhost:8000 ..."
-Start-Process -FilePath $venvPy -WorkingDirectory $backend -ArgumentList "-m", "uvicorn", "main:app", "--port", "8000"
+# Everything below talks to 127.0.0.1, never "localhost". On Windows, localhost
+# resolves to the IPv6 ::1 first, and uvicorn binds IPv4 only - so the readiness
+# probe kept reporting a perfectly healthy backend as "still starting".
 
-Write-Host "  Starting dashboard on http://localhost:5500 ..."
-Start-Process -FilePath $venvPy -WorkingDirectory $frontend -ArgumentList "-m", "http.server", "5500"
+function Test-Port($port) {
+  try {
+    $c = New-Object Net.Sockets.TcpClient
+    $c.Connect("127.0.0.1", $port); $c.Close(); return $true
+  } catch { return $false }
+}
+
+if (Test-Port 8000) {
+  Write-Host "  Backend already running on port 8000, leaving it alone."
+} else {
+  Write-Host "  Starting backend on http://127.0.0.1:8000 ..."
+  Start-Process -FilePath $venvPy -WorkingDirectory $backend -ArgumentList "-m", "uvicorn", "main:app", "--port", "8000"
+}
+
+if (Test-Port 5500) {
+  Write-Host "  Dashboard already running on port 5500, leaving it alone."
+} else {
+  Write-Host "  Starting dashboard on http://127.0.0.1:5500 ..."
+  Start-Process -FilePath $venvPy -WorkingDirectory $frontend -ArgumentList "-m", "http.server", "5500"
+}
 
 # --- 5. confirm the backend is actually usable ------------------------------
 # Importing pandas and matplotlib makes a cold start take a good 15-30 seconds on
@@ -70,7 +89,7 @@ $health = $null
 foreach ($attempt in 1..90) {
     Start-Sleep -Seconds 1
     try {
-        $health = Invoke-RestMethod -Uri "http://localhost:8000/health" -TimeoutSec 2
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2
         break
     } catch {
         if ($attempt % 5 -eq 0) { Write-Host "    still starting... ($attempt s)" }
@@ -93,8 +112,8 @@ if ($health.gemini_configured) {
 }
 
 Write-Host ""
-Write-Host "  Dashboard : http://localhost:5500" -ForegroundColor Cyan
-Write-Host "  API docs  : http://localhost:8000/docs" -ForegroundColor Cyan
+Write-Host "  Dashboard : http://127.0.0.1:5500" -ForegroundColor Cyan
+Write-Host "  API docs  : http://127.0.0.1:8000/docs" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Next: load the extension at chrome://extensions"
 Write-Host "        (Developer mode -> Load unpacked -> the 'extension' folder)"
@@ -103,4 +122,4 @@ Write-Host ""
 Write-Host "  Close the two new windows to stop the servers."
 Write-Host ""
 
-Start-Process "http://localhost:5500"
+Start-Process "http://127.0.0.1:5500"
