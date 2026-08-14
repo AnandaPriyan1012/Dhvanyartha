@@ -194,10 +194,16 @@ FIRST_PERSON_DISTRESS = re.compile(rf"{_FIRST_PERSON}.{{0,40}}?{_DISTRESS}|{_DIS
 # These stay blocked: "i want to die" is a child in pain, "painless ways to end my
 # life" is a request for instructions.
 _METHOD_SEEKING = re.compile(
-    r"(?:how to|ways? to|methods?|painless|quickest|fastest|easiest|best way|"
-    r"without (?:anyone|being) )"
-    r".{0,30}?(?:kill|die|suicide|hurt myself|harm myself|overdose|hang|"
-    r"end (?:my life|it all|it))"
+    # Asking HOW, HOW MANY or HOW MUCH. "how many pills to overdose" is a request
+    # for a dose, not a description of a feeling, and was slipping through as
+    # crisis because only "how to" was matched.
+    r"(?:how (?:to|many|much|long)|ways? to|methods?|painless|quickest|fastest|"
+    r"easiest|best way|enough to|without (?:anyone|being) )"
+    r".{0,34}?(?:kill|die|suicide|hurt myself|harm myself|self[- ]?harm|overdose|"
+    r"hang|bleed out|lethal|fatal|poison|end (?:my life|it all|it))"
+    # Concealing self-harm keeps it going, so it is treated as method content
+    # rather than as a disclosure. The parent is still alerted either way.
+    r"|hid(?:e|ing)\b.{0,30}?(?:self[- ]?harm|cut(?:ting)?s?\b|scars)"
     r"|(?:thinspo|pro[- ]?ana|pro[- ]?mia|purge|starv)",
     re.I,
 )
