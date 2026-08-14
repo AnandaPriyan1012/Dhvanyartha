@@ -16,12 +16,15 @@ const STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   :host {
-    --void: #17151c;
-    --shell: #221f2a;
+    /* Same tokens as the parent dashboard's dark theme, so the extension and the
+       dashboard read as one product rather than two. */
+    --void: #121016;
+    --shell: #1b1820;
+    --raised: #232029;
     --seam: #322e3b;
     --ink: #ece9f2;
-    --ash: #9791a8;
-    --faint: #6b6578;
+    --ash: #a49cb4;
+    --faint: #6f677e;
     --ember: #d9805c;
     --clear: #4cba75;
     --watch: #dba449;

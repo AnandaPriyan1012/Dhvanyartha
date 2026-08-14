@@ -3,107 +3,111 @@
 <head>
 <meta charset="UTF-8">
 <style>
-  body {
-    width: 260px;
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: #fafaf8;
-    color: #1c1c1e;
-  }
-  .wrap { padding: 16px; }
-  h1 {
-    font-size: 15px;
-    margin: 0 0 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  h1 .dot { width: 7px; height: 7px; border-radius: 50%; background: #c96442; }
+  /* Same tokens as the dashboard's dark theme and the on-page HUD, so all three
+     surfaces read as one product. */
+  :root {
+    --void:  #121016;
+    --shell: #1b1820;
+    --raised:#232029;
+    --seam:  #322e3b;
+    --ink:   #ece9f2;
+    --ash:   #a49cb4;
+    --faint: #6f677e;
+    --ember: #d9805c;
+    --clear: #4cba75;
+    --halt:  #de6d60;
 
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 12px;
-    background: #fff;
-    border: 1px solid #e9e7e2;
-    border-radius: 10px;
-    margin-bottom: 10px;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    width: 288px;
+    font-family: var(--sans);
+    background: var(--void);
+    color: var(--ink);
     font-size: 13px;
   }
+
+  .wrap { padding: 16px; display: flex; flex-direction: column; gap: 9px; }
+
+  h1 {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 13px; font-weight: 600; margin-bottom: 4px;
+  }
+  h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ember); }
+
   /* Protection state is shown, not offered. It is the parent's decision, made in
      the dashboard, so there is deliberately no control here to switch it off. */
   .status-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 11px 12px;
-    background: #fff;
-    border: 1px solid #e9e7e2;
-    border-radius: 10px;
-    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 11px;
+    padding: 13px 14px; background: var(--shell);
+    border: 1px solid var(--seam); border-radius: 12px;
   }
   .status-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #b3b1ac; flex-shrink: 0;
+    width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+    background: var(--faint);
   }
-  .status-dot.on { background: #2f9e56; }
-  .status-dot.off { background: #c94b3f; }
-  .status-title { font-size: 13px; font-weight: 600; }
-  .status-note { font-size: 11px; color: #86868b; margin-top: 1px; }
+  .status-dot.on  { background: var(--clear); box-shadow: 0 0 0 4px rgba(76,186,117,.14); }
+  .status-dot.off { background: var(--halt);  box-shadow: 0 0 0 4px rgba(222,109,96,.14); }
+  .status-title { font-size: 13.5px; font-weight: 600; }
+  .status-note  { font-size: 11px; color: var(--faint); margin-top: 2px; line-height: 1.4; }
 
-  .switch { position: relative; width: 36px; height: 20px; }
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 14px; background: var(--shell);
+    border: 1px solid var(--seam); border-radius: 12px;
+    font-size: 13px; color: var(--ash);
+  }
+
+  .switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
   .switch input { opacity: 0; width: 0; height: 0; }
   .slider {
     position: absolute; cursor: pointer; inset: 0;
-    background: #d8d5cd; border-radius: 20px; transition: 0.15s;
+    background: var(--seam); border-radius: 20px; transition: .15s;
   }
   .slider:before {
     content: ""; position: absolute; height: 14px; width: 14px;
-    left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.15s;
+    left: 3px; bottom: 3px; background: var(--ash);
+    border-radius: 50%; transition: .15s;
   }
-  input:checked + .slider { background: #c96442; }
-  input:checked + .slider:before { transform: translateX(16px); }
+  input:checked + .slider { background: var(--ember); }
+  input:checked + .slider:before { transform: translateX(16px); background: #fff; }
+  input:focus-visible + .slider { outline: 2px solid var(--ember); outline-offset: 2px; }
 
-  #scanBtn {
-    width: 100%;
-    padding: 10px;
-    border-radius: 10px;
-    border: none;
-    background: #c96442;
-    color: #fff;
-    font-weight: 600;
-    font-size: 13px;
-    cursor: pointer;
-    margin-bottom: 8px;
+  button {
+    font-family: var(--sans); cursor: pointer; border-radius: 11px;
+    transition: filter .15s, border-color .15s, color .15s;
   }
-  #scanBtn:hover { filter: brightness(1.06); }
+  #scanBtn {
+    width: 100%; padding: 11px; border: none;
+    background: var(--ember); color: #1a1016;
+    font-weight: 600; font-size: 13px;
+  }
+  #scanBtn:hover { filter: brightness(1.08); }
 
   #clearBlockedBtn {
-    width: 100%;
-    padding: 9px;
-    border-radius: 10px;
-    border: 1px solid #e9e7e2;
-    background: #fff;
-    color: #86868b;
-    font-weight: 500;
-    font-size: 12.5px;
-    cursor: pointer;
-    margin-bottom: 8px;
+    width: 100%; padding: 10px; border: 1px solid var(--seam);
+    background: transparent; color: var(--ash);
+    font-weight: 500; font-size: 12.5px;
   }
-  #clearBlockedBtn:hover { color: #c96442; border-color: #c96442; }
-  #scanStatus { font-size: 12px; color: #86868b; text-align: center; margin-bottom: 10px; min-height: 14px; }
+  #clearBlockedBtn:hover { border-color: var(--halt); color: var(--halt); }
+
+  #scanStatus {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint);
+    text-align: center; min-height: 13px;
+  }
 
   #dashboardLink {
-    display: block;
-    text-align: center;
-    font-size: 12.5px;
-    color: #86868b;
-    padding: 8px;
-    cursor: pointer;
-    border-top: 1px solid #e9e7e2;
+    text-align: center; font-size: 12.5px; color: var(--faint);
+    padding: 12px; cursor: pointer; border-top: 1px solid var(--seam);
   }
-  #dashboardLink:hover { color: #c96442; }
+  #dashboardLink:hover { color: var(--ember); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
@@ -119,7 +123,7 @@
   </div>
 
   <div class="toggle-row">
-    <span>Show floating toolbar</span>
+    <span>Show floating status</span>
     <label class="switch">
       <input type="checkbox" id="toolbarToggle">
       <span class="slider"></span>
